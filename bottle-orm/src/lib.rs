@@ -65,7 +65,7 @@ impl Database {
         Ok(Self { pool })
     }
 
-    pub fn migrator(&self) -> Migrator {
+    pub fn migrator(&self) -> Migrator<'_> {
         Migrator::new(self)
     }
 
