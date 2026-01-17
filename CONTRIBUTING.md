@@ -23,13 +23,13 @@ By participating, you are expected to uphold this code. Please report unacceptab
 
 > If you want to ask a question, we assume that you have read the available [Documentation](README.md).
 
-Before you ask a question, it is best to search for existing [Issues](https://github.com/your-username/bottle-orm/issues) that might help you. In case you've found a suitable issue and still need clarification, you can write your question in this issue. It is also advisable to search the internet for answers first.
+Before you ask a question, it is best to search for existing [Issues](https://github.com/Murilinho145SG/bottle-orm/issues) that might help you. In case you've found a suitable issue and still need clarification, you can write your question in this issue. It is also advisable to search the internet for answers first.
 
 ## I Want To Contribute
 
 ### Reporting Bugs
 
-- **Ensure the bug was not already reported** by searching on GitHub under [Issues](https://github.com/your-username/bottle-orm/issues).
+- **Ensure the bug was not already reported** by searching on GitHub under [Issues](https://github.com/Murilinho145SG/bottle-orm/issues).
 - If you're unable to find an open issue addressing the problem, open a new one. Be sure to include a **title and clear description**, as much relevant information as possible, and a **code sample** or an **executable test case** demonstrating the expected behavior that is not occurring.
 
 ### Suggesting Enhancements

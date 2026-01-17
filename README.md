@@ -16,7 +16,7 @@ Add the following to your `Cargo.toml`:
 
 ```toml
 [dependencies]
-bottle-orm = { git = "https://github.com/your-username/bottle-orm" }
+bottle-orm = { git = "https://github.com/Murilinho145SG/bottle-orm" }
 tokio = { version = "1", features = ["full"] }
 sqlx = { version = "0.7", features = ["runtime-tokio-native-tls", "postgres"] } # Or your preferred db
 dotenvy = "0.15"
