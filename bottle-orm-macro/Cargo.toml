@@ -2,6 +2,10 @@
 name = "bottle-orm-macro"
 version = "0.1.0"
 edition = "2024"
+authors = ["Murilinho145SG"]
+description = "Procedural macros for bottle-orm, a lightweight ORM for Rust"
+license = "MIT"
+repository = "https://github.com/Murilinho145SG/bottle-orm"
 
 [lib]
 proc-macro = true
