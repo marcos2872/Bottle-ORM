@@ -28,8 +28,8 @@ async fn main() -> Result<(), sqlx::Error> {
     let url = env::var("DATABASE_URL").expect("DATABASE_URL is not defined.");
     let db = Database::connect(&url).await?;
     db.migrator().register::<User>().register::<Account>().run().await?;
-    // let acc = Account { id: 1, user_id: 1, r#type: "credential".to_string() };
-    // db.model::<Account>().insert(&acc).await?;
+    let acc = Account { id: 1, user_id: 1, r#type: "credential".to_string() };
+    db.model::<Account>().insert(&acc).await?;
     let other_acc: Account = db.model::<Account>().filter("id", "=", 1).first().await?;
     println!("{}", other_acc.r#type);
     Ok(())

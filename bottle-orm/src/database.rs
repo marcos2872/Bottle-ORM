@@ -1,10 +1,9 @@
 use sqlx::{
-    any::{AnyPoolOptions, AnyRow},
+    any::AnyPoolOptions,
     AnyPool, Error, Row,
 };
 use heck::ToSnakeCase;
 use crate::{model::Model, query_builder::QueryBuilder, migration::Migrator};
-use std::marker::PhantomData;
 
 /// Supported database driver types.
 #[derive(Clone, Debug)]
@@ -66,7 +65,7 @@ impl Database {
     /// ```rust,ignore
     /// let query = db.model::<User>();
     /// ```
-    pub fn model<T: Model + >(&self) -> QueryBuilder<'_, T> {
+    pub fn model<T: Model + Send + Sync + Unpin>(&self) -> QueryBuilder<'_, T> {
         let active_columns = T::active_columns();
         let mut columns: Vec<String> = Vec::with_capacity(active_columns.capacity());       
         for col in active_columns {
@@ -88,7 +87,7 @@ impl Database {
 
         for col in &columns {
             let col_name = col.name.strip_prefix("r#").unwrap_or(col.name).to_snake_case(); 
-            let mut def = format!("\"{}\" {}\"", col_name, col.sql_type);
+            let mut def = format!("\"{}\" {}", col_name, col.sql_type);
 
             if col.is_primary_key {
                 def.push_str(" PRIMARY KEY");
@@ -156,7 +155,7 @@ impl Database {
                 }
 
                 let alter_query = format!(
-                    "ALTER TABLE \"{}\" ADD CONSTRAINT \"{}\" FOREIGN KEY (\"{}\") REFERENCES \"{}\" (\"{}\")",
+                    "ALTER TABLE \"{}\" ADD CONSTRAINT \"{}\" FOREIGN KEY (\"{}\") REFERENCES \"{}\" (\"{}\" )",
                     table_name, constraint_name, col_name, f_table_clean, f_key_clean       
                 );
 

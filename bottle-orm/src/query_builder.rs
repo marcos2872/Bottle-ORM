@@ -1,7 +1,6 @@
 use crate::{database::{Database, Drivers}, model::{ColumnInfo, Model}};
 use sqlx::{
-    any::{AnyArguments, AnyRow},
-    Any, Arguments, FromRow, Type, Encode,
+    Any, Arguments, Encode, FromRow, Type, any::{AnyArguments, AnyRow}
 };
 use heck::ToSnakeCase;
 use std::marker::PhantomData;
@@ -82,7 +81,7 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
 
             match driver {
                 Drivers::Postgres => {
-                    query.push_str(&format!("${{}}", arg_counter));
+                    query.push_str(&format!("${}", arg_counter));
                     *arg_counter += 1;
                 }
                 _ => query.push('?'),
@@ -132,7 +131,7 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
 
         for (col_name, value) in data_map {
             let col_name_clean = col_name.strip_prefix("r#").unwrap_or(&col_name).to_snake_case();
-            target_columns.push(format!("\"{{}}\"", col_name_clean));
+            target_columns.push(format!("\"{}\"", col_name_clean));
 
             let sql_type = columns_info.iter().find(|c| c.name == col_name).map(|c| c.sql_type).unwrap_or("TEXT");
 
@@ -146,11 +145,11 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
                 Drivers::Postgres => {
                     let idx = i + 1;
                     match *sql_type {
-                        "TIMESTAMPTZ" | "DateTime" => format!("${{}}::TIMESTAMPTZ", idx),     
-                        "TIMESTAMP" | "NaiveDateTime" => format!("${{}}::TIMESTAMP", idx),    
-                        "DATE" | "NaiveDate" => format!("${{}}::DATE", idx),
-                        "TIME" | "NaiveTime" => format!("${{}}::TIME", idx),
-                        _ => format!("${{}}", idx),
+                        "TIMESTAMPTZ" | "DateTime" => format!("${}::TIMESTAMPTZ", idx),     
+                        "TIMESTAMP" | "NaiveDateTime" => format!("${}::TIMESTAMP", idx),    
+                        "DATE" | "NaiveDate" => format!("${}::DATE", idx),
+                        "TIME" | "NaiveTime" => format!("${}::TIME", idx),
+                        _ => format!("${}", idx),
                     }
                 }
                 _ => "?".to_string(),
@@ -158,7 +157,7 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
             .collect();
 
         let query_str = format!(
-            "INSERT INTO \"{{}}\" ({{}}) VALUES ({{}})",
+            "INSERT INTO \"{}\" ({}) VALUES ({})",
             table_name,
             target_columns.join(", "),
             placeholders.join(", ")
@@ -276,7 +275,7 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
             query.push_str(" LIMIT ");
             match self.db.driver {
                  Drivers::Postgres => {
-                     query.push_str(&format!("${{}}", arg_counter));
+                     query.push_str(&format!("${}", arg_counter));
                      arg_counter += 1;
                  }
                  _ => query.push('?'),
@@ -288,8 +287,8 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
             query.push_str(" OFFSET ");
             match self.db.driver {
                  Drivers::Postgres => {
-                     query.push_str(&format!("${{}}", arg_counter));
-                     arg_counter += 1;
+                     query.push_str(&format!("${}", arg_counter));
+                     // arg_counter += 1; // Ignored as it is last usage
                  }
                  _ => query.push('?'),
             }
