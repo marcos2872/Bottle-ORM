@@ -1,3 +1,25 @@
-.env
+# Rust
 /target
-.zed
+Cargo.lock
+
+# IDEs
+.idea/
+.vscode/
+.zed/
+*.swp
+*.swo
+
+# Environment & Secrets
+.env
+.env.*
+!.env.example
+
+# Database
+*.db
+*.db-journal
+*.sqlite
+*.sqlite-journal
+
+# OS generated files
+.DS_Store
+Thumbs.db

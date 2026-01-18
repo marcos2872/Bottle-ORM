@@ -66,7 +66,7 @@ impl Database {
     /// ```rust,ignore
     /// let query = db.model::<User>();
     /// ```
-    pub fn model<T: Model>(&self) -> QueryBuilder<'_, T> {
+    pub fn model<T: Model + >(&self) -> QueryBuilder<'_, T> {
         let active_columns = T::active_columns();
         let mut columns: Vec<String> = Vec::with_capacity(active_columns.capacity());       
         for col in active_columns {

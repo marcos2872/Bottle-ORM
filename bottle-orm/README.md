@@ -16,7 +16,7 @@ Add `bottle-orm` to your `Cargo.toml`. You will also need `sqlx`, `tokio`, and `
 
 ```toml
 [dependencies]
-bottle-orm = { git = "https://github.com/Murilinho145SG/bottle-orm" }
+bottle-orm = { path = "path/to/bottle-orm" } # Or version from crates.io when available
 sqlx = { version = "0.8", features = ["runtime-tokio", "tls-native-tls", "any", "postgres", "sqlite", "mysql", "chrono"] }
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
