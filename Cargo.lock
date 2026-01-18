@@ -78,7 +78,9 @@ name = "bottle"
 version = "0.1.0"
 dependencies = [
  "bottle-orm",
+ "chrono",
  "dotenvy",
+ "serde",
  "sqlx",
  "tokio",
 ]
@@ -92,6 +94,7 @@ dependencies = [
  "chrono",
  "futures",
  "heck",
+ "serde",
  "sqlx",
 ]
 
@@ -99,6 +102,7 @@ dependencies = [
 name = "bottle-orm-macro"
 version = "0.1.0"
 dependencies = [
+ "heck",
  "proc-macro2",
  "quote",
  "syn",
