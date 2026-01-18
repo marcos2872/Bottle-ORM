@@ -1,10 +1,15 @@
-use crate::{database::{Database, Drivers}, model::{ColumnInfo, Model}};
-use sqlx::{
-    Any, Arguments, Encode, FromRow, Type, any::{AnyArguments, AnyRow}
+use crate::{
+    database::{Database, Drivers},
+    model::{ColumnInfo, Model},
+    Error,
 };
-use heck::ToSnakeCase;
-use std::marker::PhantomData;
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
+use heck::ToSnakeCase;
+use sqlx::{
+    any::{AnyArguments, AnyRow},
+    Any, Arguments, Encode, FromRow, Type,
+};
+use std::marker::PhantomData;
 
 /// A type alias for filter closures that support manual SQL construction and argument binding.
 ///
@@ -36,10 +41,10 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
     ///
     /// Usually called via `db.model::<T>()`.
     pub fn new(
-        db: &'a Database, 
-        table_name: &'static str, 
-        columns_info: Vec<ColumnInfo>, 
-        columns: Vec<String>
+        db: &'a Database,
+        table_name: &'static str,
+        columns_info: Vec<ColumnInfo>,
+        columns: Vec<String>,
     ) -> Self {
         Self {
             db,
@@ -70,7 +75,7 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
     /// ```
     pub fn filter<V>(mut self, col: &'static str, op: &'static str, value: V) -> Self
     where
-        V: 'static + for<'q> Encode<'q, Any> + Type<Any> + Send + Sync + Clone, 
+        V: 'static + for<'q> Encode<'q, Any> + Type<Any> + Send + Sync + Clone,
     {
         let clause: FilterFn = Box::new(move |query, args, driver, arg_counter| {
             query.push_str(" AND \"");
@@ -86,11 +91,44 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
                 }
                 _ => query.push('?'),
             }
-            
+
             args.add(value.clone());
         });
         self.where_clauses.push(clause);
         self
+    }
+
+    pub fn order(mut self, order: &str) -> Self {
+        self.order_clauses.push(order.to_string());
+        self
+    }
+    
+    pub fn preload(mut self) -> Self {
+    	self
+    }
+
+    pub fn join(mut self) -> Self {
+        self
+    }
+
+    pub fn pagination(
+        mut self,
+        max_value: usize,
+        default: usize,
+        page: usize,
+        value: isize,
+    ) -> Result<Self, Error> {
+        if value < 0 {
+            return Err(Error::InvalidArgument("value cannot be negative".into()));
+        }
+        let mut f_value = value as usize;
+
+        if f_value > max_value {
+            f_value = default;
+        }
+        self = self.offset(f_value * page);
+        self = self.limit(f_value);
+        Ok(self)
     }
 
     /// Selects specific columns to return.
@@ -145,8 +183,8 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
                 Drivers::Postgres => {
                     let idx = i + 1;
                     match *sql_type {
-                        "TIMESTAMPTZ" | "DateTime" => format!("${}::TIMESTAMPTZ", idx),     
-                        "TIMESTAMP" | "NaiveDateTime" => format!("${}::TIMESTAMP", idx),    
+                        "TIMESTAMPTZ" | "DateTime" => format!("${}::TIMESTAMPTZ", idx),
+                        "TIMESTAMP" | "NaiveDateTime" => format!("${}::TIMESTAMP", idx),
                         "DATE" | "NaiveDate" => format!("${}::DATE", idx),
                         "TIME" | "NaiveTime" => format!("${}::TIME", idx),
                         _ => format!("${}", idx),
@@ -165,7 +203,7 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
 
         // println!("{}", query_str); // Debug if needed
         let mut query = sqlx::query::<sqlx::Any>(&query_str);
-        
+
         // Manual binding based on string parsing
         for (val_str, sql_type) in bindings {
             match sql_type {
@@ -232,12 +270,16 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
         query.push_str(" FROM \"");
         query.push_str(&self.table_name.to_snake_case());
         query.push_str("\" WHERE 1=1");
-        
+
         let mut dummy_args = AnyArguments::default();
         let mut dummy_counter = 1;
-        
+
         for clause in &self.where_clauses {
             clause(&mut query, &mut dummy_args, &self.db.driver, &mut dummy_counter);
+        }
+
+        if !self.order_clauses.is_empty() {
+            query.push_str(&format!(" ORDER BY {}", &self.order_clauses.join(", ")));
         }
 
         query
@@ -274,11 +316,11 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
         if let Some(limit) = self.limit {
             query.push_str(" LIMIT ");
             match self.db.driver {
-                 Drivers::Postgres => {
-                     query.push_str(&format!("${}", arg_counter));
-                     arg_counter += 1;
-                 }
-                 _ => query.push('?'),
+                Drivers::Postgres => {
+                    query.push_str(&format!("${}", arg_counter));
+                    arg_counter += 1;
+                }
+                _ => query.push('?'),
             }
             args.add(limit as i64);
         }
@@ -286,11 +328,11 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
         if let Some(offset) = self.offset {
             query.push_str(" OFFSET ");
             match self.db.driver {
-                 Drivers::Postgres => {
-                     query.push_str(&format!("${}", arg_counter));
-                     // arg_counter += 1; // Ignored as it is last usage
-                 }
-                 _ => query.push('?'),
+                Drivers::Postgres => {
+                    query.push_str(&format!("${}", arg_counter));
+                    // arg_counter += 1; // Ignored as it is last usage
+                }
+                _ => query.push('?'),
             }
             args.add(offset as i64);
         }
