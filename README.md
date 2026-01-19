@@ -23,7 +23,7 @@ This repository is a workspace containing:
 
 ## Installation
 
-Add `bottle-orm` to your `Cargo.toml`. You will also need `sqlx`, `tokio`, and `serde`.
+Add `bottle-orm` to your `Cargo.toml`. You will also need `sqlx`, `tokio`, `serde`, and optionally `uuid` for UUID support.
 
 ```toml
 [dependencies]
@@ -32,6 +32,7 @@ sqlx = { version = "0.8", features = ["runtime-tokio", "tls-native-tls", "any", 
 tokio = { version = "1", features = ["full"] }
 serde = { version = "1", features = ["derive"] }
 chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.11", features = ["v4", "v7", "serde"] }  # Optional: for UUID support
 ```
 
 ## Quick Start
@@ -113,8 +114,92 @@ let adults: Vec<User> = db.model::<User>()
 - `unique`: Adds a UNIQUE constraint.
 - `index`: Creates an index for this column.
 - `create_time`: Sets default value to current timestamp on creation.
+- `update_time`: Auto-updates timestamp on modification (future feature).
 - `foreign_key = "Table::Column"`: Creates a Foreign Key relationship.
 - `size = N`: Sets the column size (e.g., `VARCHAR(N)`).
+
+## UUID Support (Versions 1-7)
+
+Bottle ORM has full support for UUID types across all versions (1 through 7). UUIDs are ideal for distributed systems and provide better security than sequential IDs.
+
+### UUID Version Overview
+
+- **Version 1**: Time-based with MAC address
+- **Version 3**: Name-based using MD5 hash
+- **Version 4**: Random (most common)
+- **Version 5**: Name-based using SHA-1 hash
+- **Version 6**: Reordered time-based (better for database indexing)
+- **Version 7**: Unix timestamp-based (sortable, recommended for new projects)
+
+### Example with Different UUID Versions
+
+```rust
+use bottle_orm::Model;
+use chrono::{DateTime, Utc};
+use serde::{Deserialize, Serialize};
+use sqlx::FromRow;
+use uuid::Uuid;
+
+#[derive(Model, Debug, Clone, Serialize, Deserialize, FromRow)]
+struct User {
+    #[orm(primary_key)]
+    id: Uuid,  // Can use any UUID version
+    #[orm(size = 50, unique)]
+    username: String,
+    #[orm(create_time)]
+    created_at: DateTime<Utc>,
+}
+
+#[tokio::main]
+async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    let db = Database::connect("postgres://localhost/mydb").await?;
+    
+    db.migrator()
+        .register::<User>()
+        .run()
+        .await?;
+
+    // UUID v4 - Random (most common)
+    let user_v4 = User {
+        id: Uuid::new_v4(),
+        username: "user_v4".to_string(),
+        created_at: Utc::now(),
+    };
+    db.model::<User>().insert(&user_v4).await?;
+
+    // UUID v7 - Timestamp-based (recommended for new projects)
+    let user_v7 = User {
+        id: Uuid::now_v7(),
+        username: "user_v7".to_string(),
+        created_at: Utc::now(),
+    };
+    db.model::<User>().insert(&user_v7).await?;
+
+    // Query by UUID
+    let found_user: User = db.model::<User>()
+        .filter("id", "=", user_v4.id)
+        .first()
+        .await?;
+
+    println!("Found user: {:?}", found_user);
+
+    Ok(())
+}
+```
+
+### UUID Foreign Keys
+
+```rust
+#[derive(Model, Debug, Clone, Serialize, Deserialize, FromRow)]
+struct Post {
+    #[orm(primary_key)]
+    id: Uuid,
+    #[orm(foreign_key = "User::id")]
+    user_id: Uuid,  // Foreign key using UUID
+    title: String,
+    content: String,
+}
+```
 
 ## License
 

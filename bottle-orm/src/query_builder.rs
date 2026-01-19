@@ -1,8 +1,52 @@
-use crate::{
-    database::{Database, Drivers},
-    model::{ColumnInfo, Model},
-    Error,
-};
+//! # Query Builder Module
+//!
+//! This module provides a fluent interface for constructing and executing SQL queries.
+//! It handles SELECT, INSERT, filtering (WHERE), pagination (LIMIT/OFFSET), and ordering operations
+//! with type-safe parameter binding across different database drivers.
+//!
+//! ## Features
+//!
+//! - **Fluent API**: Chainable methods for building complex queries
+//! - **Type-Safe Binding**: Automatic parameter binding with support for multiple types
+//! - **Multi-Driver Support**: Works with PostgreSQL, MySQL, and SQLite
+//! - **UUID Support**: Full support for UUID versions 1-7
+//! - **Pagination**: Built-in LIMIT/OFFSET support with helper methods
+//! - **Custom Filters**: Support for manual SQL construction with closures
+//!
+//! ## Example Usage
+//!
+//! ```rust,ignore
+//! use bottle_orm::{Database, Model};
+//! use uuid::Uuid;
+//!
+//! // Simple query
+//! let users: Vec<User> = db.model::<User>()
+//!     .filter("age", ">=", 18)
+//!     .order("created_at DESC")
+//!     .limit(10)
+//!     .scan()
+//!     .await?;
+//!
+//! // Query with UUID filter
+//! let user_id = Uuid::new_v4();
+//! let user: User = db.model::<User>()
+//!     .filter("id", "=", user_id)
+//!     .first()
+//!     .await?;
+//!
+//! // Insert a new record
+//! let new_user = User {
+//!     id: Uuid::new_v7(uuid::Timestamp::now(uuid::NoContext)),
+//!     username: "john_doe".to_string(),
+//!     age: 25,
+//! };
+//! db.model::<User>().insert(&new_user).await?;
+//! ```
+
+// ============================================================================
+// External Crate Imports
+// ============================================================================
+
 use chrono::{DateTime, NaiveDate, NaiveDateTime, NaiveTime, Utc};
 use heck::ToSnakeCase;
 use sqlx::{
@@ -10,36 +54,137 @@ use sqlx::{
     Any, Arguments, Encode, FromRow, Type,
 };
 use std::marker::PhantomData;
+use uuid::Uuid;
+
+// ============================================================================
+// Internal Crate Imports
+// ============================================================================
+
+use crate::{
+    database::{Database, Drivers},
+    model::{ColumnInfo, Model},
+    Error,
+};
+
+// ============================================================================
+// Type Aliases
+// ============================================================================
 
 /// A type alias for filter closures that support manual SQL construction and argument binding.
 ///
-/// It receives:
-/// 1. `&mut String`: The SQL query buffer being built.
-/// 2. `&mut AnyArguments`: The argument container for binding values.
-/// 3. `&Drivers`: The current database driver (to decide between `$n` or `?`).
-/// 4. `&mut usize`: The argument counter (for PostgreSQL `$n` placeholders).
+/// Filter functions receive the following parameters:
+/// 1. `&mut String` - The SQL query buffer being built
+/// 2. `&mut AnyArguments` - The argument container for binding values
+/// 3. `&Drivers` - The current database driver (determines placeholder syntax)
+/// 4. `&mut usize` - The argument counter (for PostgreSQL `$n` placeholders)
+///
+/// ## Example
+///
+/// ```rust,ignore
+/// let custom_filter: FilterFn = Box::new(|query, args, driver, counter| {
+///     query.push_str(" AND age > ");
+///     match driver {
+///         Drivers::Postgres => {
+///             query.push_str(&format!("${}", counter));
+///             *counter += 1;
+///         }
+///         _ => query.push('?'),
+///     }
+///     args.add(18);
+/// });
+/// ```
 pub type FilterFn = Box<dyn Fn(&mut String, &mut AnyArguments<'_>, &Drivers, &mut usize) + Send + Sync>;
+
+// ============================================================================
+// QueryBuilder Struct
+// ============================================================================
 
 /// A fluent Query Builder for constructing SQL queries.
 ///
-/// Handles SELECT, INSERT, filtering (WHERE), pagination (LIMIT/OFFSET), and ordering.
+/// `QueryBuilder` provides a type-safe, ergonomic interface for building and executing
+/// SQL queries across different database backends. It supports filtering, ordering,
+/// pagination, and both SELECT and INSERT operations.
+///
+/// ## Type Parameter
+///
+/// * `'a` - Lifetime of the database reference
+/// * `T` - The Model type this query operates on
+///
+/// ## Fields
+///
+/// * `db` - Reference to the database connection pool
+/// * `table_name` - Static string containing the table name
+/// * `columns_info` - Metadata about each column in the table
+/// * `columns` - List of column names in snake_case format
+/// * `select_columns` - Specific columns to select (empty = SELECT *)
+/// * `where_clauses` - List of filter functions to apply
+/// * `order_clauses` - List of ORDER BY clauses
+/// * `limit` - Maximum number of rows to return
+/// * `offset` - Number of rows to skip (for pagination)
+/// * `_marker` - PhantomData to bind the generic type T
 pub struct QueryBuilder<'a, T> {
+    /// Reference to the database connection pool
     pub(crate) db: &'a Database,
+
+    /// Name of the database table (in original case)
     pub(crate) table_name: &'static str,
+
+    /// Metadata information about each column
     pub(crate) columns_info: Vec<ColumnInfo>,
+
+    /// List of column names (in snake_case)
     pub(crate) columns: Vec<String>,
+
+    /// Specific columns to select (empty means SELECT *)
     pub(crate) select_columns: Vec<String>,
+
+    /// Collection of WHERE clause filter functions
     pub(crate) where_clauses: Vec<FilterFn>,
+
+    /// Collection of ORDER BY clauses
     pub(crate) order_clauses: Vec<String>,
+
+    /// Maximum number of rows to return (LIMIT)
     pub(crate) limit: Option<usize>,
+
+    /// Number of rows to skip (OFFSET)
     pub(crate) offset: Option<usize>,
+
+    /// PhantomData to bind the generic type T
     pub(crate) _marker: PhantomData<T>,
 }
 
+// ============================================================================
+// QueryBuilder Implementation
+// ============================================================================
+
 impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
+    // ========================================================================
+    // Constructor
+    // ========================================================================
+
     /// Creates a new QueryBuilder instance.
     ///
-    /// Usually called via `db.model::<T>()`.
+    /// This constructor is typically called internally via `db.model::<T>()`.
+    /// You rarely need to call this directly.
+    ///
+    /// # Arguments
+    ///
+    /// * `db` - Reference to the database connection
+    /// * `table_name` - Name of the table to query
+    /// * `columns_info` - Metadata about table columns
+    /// * `columns` - List of column names
+    ///
+    /// # Returns
+    ///
+    /// A new `QueryBuilder` instance ready for query construction
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Usually called via db.model::<User>()
+    /// let query = db.model::<User>();
+    /// ```
     pub fn new(
         db: &'a Database,
         table_name: &'static str,
@@ -60,18 +205,54 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
         }
     }
 
+    // ========================================================================
+    // Query Building Methods
+    // ========================================================================
+
     /// Adds a WHERE clause to the query.
+    ///
+    /// This method adds a filter condition to the query. Multiple filters can be chained
+    /// and will be combined with AND operators. The value is bound as a parameter to
+    /// prevent SQL injection.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `V` - The type of the value to filter by. Must be encodable for SQL queries.
     ///
     /// # Arguments
     ///
-    /// * `col` - The column name.
-    /// * `op` - The operator (e.g., "=", ">", "LIKE").
-    /// * `value` - The value to compare against.
+    /// * `col` - The column name to filter on
+    /// * `op` - The comparison operator (e.g., "=", ">", "LIKE", "IN")
+    /// * `value` - The value to compare against
+    ///
+    /// # Supported Types
+    ///
+    /// - Primitives: `i32`, `i64`, `f64`, `bool`, `String`
+    /// - UUID: `Uuid` (all versions 1-7)
+    /// - Date/Time: `DateTime<Utc>`, `NaiveDateTime`, `NaiveDate`, `NaiveTime`
+    /// - Options: `Option<T>` for any supported type T
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// db.model::<User>().filter("age", ">", 18).scan().await?;
+    /// // Filter by integer
+    /// query.filter("age", ">=", 18)
+    ///
+    /// // Filter by string
+    /// query.filter("username", "=", "john_doe")
+    ///
+    /// // Filter by UUID
+    /// let user_id = Uuid::new_v4();
+    /// query.filter("id", "=", user_id)
+    ///
+    /// // Filter with LIKE operator
+    /// query.filter("email", "LIKE", "%@example.com")
+    ///
+    /// // Chain multiple filters
+    /// query
+    ///     .filter("age", ">=", 18)
+    ///     .filter("active", "=", true)
+    ///     .filter("role", "=", "admin")
     /// ```
     pub fn filter<V>(mut self, col: &'static str, op: &'static str, value: V) -> Self
     where
@@ -84,79 +265,287 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
             query.push_str(op);
             query.push(' ');
 
+            // Handle different placeholder syntaxes based on database driver
             match driver {
+                // PostgreSQL uses numbered placeholders: $1, $2, $3, ...
                 Drivers::Postgres => {
                     query.push_str(&format!("${}", arg_counter));
                     *arg_counter += 1;
                 }
+                // MySQL and SQLite use question mark placeholders: ?
                 _ => query.push('?'),
             }
 
-            args.add(value.clone());
+            // Bind the value to the query
+            let _ = args.add(value.clone());
         });
+
         self.where_clauses.push(clause);
         self
     }
 
+    /// Adds an ORDER BY clause to the query.
+    ///
+    /// Specifies the sort order for the query results. Multiple order clauses
+    /// can be added and will be applied in the order they were added.
+    ///
+    /// # Arguments
+    ///
+    /// * `order` - The ORDER BY expression (e.g., "created_at DESC", "age ASC, name DESC")
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Single column ascending (ASC is default)
+    /// query.order("age")
+    ///
+    /// // Single column descending
+    /// query.order("created_at DESC")
+    ///
+    /// // Multiple columns
+    /// query.order("age DESC, username ASC")
+    ///
+    /// // Chain multiple order clauses
+    /// query
+    ///     .order("priority DESC")
+    ///     .order("created_at ASC")
+    /// ```
     pub fn order(mut self, order: &str) -> Self {
         self.order_clauses.push(order.to_string());
         self
     }
-    
-    pub fn preload(mut self) -> Self {
-    	self
-    }
 
-    pub fn join(mut self) -> Self {
+    /// Placeholder for eager loading relationships (preload).
+    ///
+    /// This method is reserved for future implementation of relationship preloading.
+    /// Currently, it returns `self` unchanged to maintain the fluent interface.
+    ///
+    /// # Future Implementation
+    ///
+    /// Will support eager loading of related models to avoid N+1 query problems:
+    ///
+    /// ```rust,ignore
+    /// // Future usage example
+    /// query.preload("posts").preload("comments")
+    /// ```
+    pub fn preload(self) -> Self {
+        // TODO: Implement relationship preloading
         self
     }
 
-    pub fn pagination(
-        mut self,
-        max_value: usize,
-        default: usize,
-        page: usize,
-        value: isize,
-    ) -> Result<Self, Error> {
+    /// Placeholder for JOIN operations.
+    ///
+    /// This method is reserved for future implementation of SQL JOINs.
+    /// Currently, it returns `self` unchanged to maintain the fluent interface.
+    ///
+    /// # Future Implementation
+    ///
+    /// Will support various types of JOINs (INNER, LEFT, RIGHT, FULL):
+    ///
+    /// ```rust,ignore
+    /// // Future usage example
+    /// query.join("posts", "users.id = posts.user_id")
+    /// ```
+    pub fn join(self) -> Self {
+        // TODO: Implement JOIN operations
+        self
+    }
+
+    /// Applies pagination with validation and limits.
+    ///
+    /// This is a convenience method that combines `limit()` and `offset()` with
+    /// built-in validation and maximum value enforcement for safer pagination.
+    ///
+    /// # Arguments
+    ///
+    /// * `max_value` - Maximum allowed items per page
+    /// * `default` - Default value if `value` exceeds `max_value`
+    /// * `page` - Zero-based page number
+    /// * `value` - Requested items per page
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Self)` - The updated QueryBuilder with pagination applied
+    /// * `Err(Error)` - If `value` is negative
+    ///
+    /// # Pagination Logic
+    ///
+    /// 1. Validates that `value` is non-negative
+    /// 2. If `value` > `max_value`, uses `default` instead
+    /// 3. Calculates offset as: `value * page`
+    /// 4. Sets limit to `value`
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Page 0 with 10 items (page 1 in 1-indexed systems)
+    /// query.pagination(100, 20, 0, 10)?  // LIMIT 10 OFFSET 0
+    ///
+    /// // Page 2 with 25 items (page 3 in 1-indexed systems)
+    /// query.pagination(100, 20, 2, 25)?  // LIMIT 25 OFFSET 50
+    ///
+    /// // Request too many items, falls back to default
+    /// query.pagination(100, 20, 0, 150)? // LIMIT 20 OFFSET 0 (150 > 100)
+    ///
+    /// // Error: negative value
+    /// query.pagination(100, 20, 0, -10)? // Returns Error
+    /// ```
+    pub fn pagination(mut self, max_value: usize, default: usize, page: usize, value: isize) -> Result<Self, Error> {
+        // Validate that value is non-negative
         if value < 0 {
             return Err(Error::InvalidArgument("value cannot be negative".into()));
         }
+
         let mut f_value = value as usize;
 
+        // Enforce maximum value limit
         if f_value > max_value {
             f_value = default;
         }
+
+        // Apply offset and limit
         self = self.offset(f_value * page);
         self = self.limit(f_value);
+
         Ok(self)
     }
 
     /// Selects specific columns to return.
     ///
-    /// By default, all columns (`*`) are selected.
+    /// By default, queries use `SELECT *` to return all columns. This method
+    /// allows you to specify exactly which columns should be returned, which can
+    /// improve performance for tables with many or large columns.
+    ///
+    /// # Arguments
+    ///
+    /// * `columns` - Comma-separated list of column names to select
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Select single column
+    /// query.select("id")
+    ///
+    /// // Select multiple columns
+    /// query.select("id, username, email")
+    ///
+    /// // Select with SQL functions
+    /// query.select("COUNT(*) as total")
+    ///
+    /// // Chain multiple select calls (all will be included)
+    /// query
+    ///     .select("id, username")
+    ///     .select("created_at")
+    /// ```
     pub fn select(mut self, columns: &str) -> Self {
         self.select_columns.push(columns.to_string());
         self
     }
 
     /// Sets the query offset (pagination).
+    ///
+    /// Specifies the number of rows to skip before starting to return rows.
+    /// Commonly used in combination with `limit()` for pagination.
+    ///
+    /// # Arguments
+    ///
+    /// * `offset` - Number of rows to skip
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Skip first 20 rows
+    /// query.offset(20)
+    ///
+    /// // Pagination: page 3 with 10 items per page
+    /// query.limit(10).offset(20)  // Skip 2 pages = 20 items
+    /// ```
     pub fn offset(mut self, offset: usize) -> Self {
         self.offset = Some(offset);
         self
     }
 
     /// Sets the maximum number of records to return.
+    ///
+    /// Limits the number of rows returned by the query. Essential for pagination
+    /// and preventing accidentally fetching large result sets.
+    ///
+    /// # Arguments
+    ///
+    /// * `limit` - Maximum number of rows to return
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Return at most 10 rows
+    /// query.limit(10)
+    ///
+    /// // Pagination: 50 items per page
+    /// query.limit(50).offset(page * 50)
+    /// ```
     pub fn limit(mut self, limit: usize) -> Self {
         self.limit = Some(limit);
         self
     }
 
+    // ========================================================================
+    // Insert Operation
+    // ========================================================================
+
     /// Inserts a new record into the database based on the model instance.
     ///
-    /// Uses manual string parsing to bind values (temporary solution until fuller serialization support).
+    /// This method serializes the model into a SQL INSERT statement with proper
+    /// type handling for primitives, dates, UUIDs, and other supported types.
+    ///
+    /// # Type Binding Strategy
+    ///
+    /// The method uses string parsing as a temporary solution for type binding.
+    /// Values are converted to strings via the model's `to_map()` method, then
+    /// parsed back to their original types for proper SQL binding.
+    ///
+    /// # Supported Types for Insert
+    ///
+    /// - **Integers**: `i32`, `i64` (INTEGER, BIGINT)
+    /// - **Boolean**: `bool` (BOOLEAN)
+    /// - **Float**: `f64` (DOUBLE PRECISION)
+    /// - **Text**: `String` (TEXT, VARCHAR)
+    /// - **UUID**: `Uuid` (UUID) - All versions 1-7 supported
+    /// - **DateTime**: `DateTime<Utc>` (TIMESTAMPTZ)
+    /// - **NaiveDateTime**: (TIMESTAMP)
+    /// - **NaiveDate**: (DATE)
+    /// - **NaiveTime**: (TIME)
+    ///
+    /// # Arguments
+    ///
+    /// * `model` - Reference to the model instance to insert
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(&Self)` - Reference to self for method chaining
+    /// * `Err(sqlx::Error)` - Database error during insertion
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// use uuid::Uuid;
+    /// use chrono::Utc;
+    ///
+    /// let new_user = User {
+    ///     id: Uuid::new_v4(),
+    ///     username: "john_doe".to_string(),
+    ///     email: "john@example.com".to_string(),
+    ///     age: 25,
+    ///     active: true,
+    ///     created_at: Utc::now(),
+    /// };
+    ///
+    /// db.model::<User>().insert(&new_user).await?;
+    /// ```
     pub async fn insert(&self, model: &T) -> Result<&Self, sqlx::Error> {
+        // Serialize model to a HashMap of column_name -> string_value
         let data_map = model.to_map();
 
+        // Early return if no data to insert
         if data_map.is_empty() {
             return Ok(&self);
         }
@@ -167,33 +556,41 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
         let mut target_columns = Vec::new();
         let mut bindings: Vec<(String, &str)> = Vec::new();
 
+        // Build column list and collect values with their SQL types
         for (col_name, value) in data_map {
+            // Strip the "r#" prefix if present (for Rust keywords used as field names)
             let col_name_clean = col_name.strip_prefix("r#").unwrap_or(&col_name).to_snake_case();
             target_columns.push(format!("\"{}\"", col_name_clean));
 
+            // Find the SQL type for this column
             let sql_type = columns_info.iter().find(|c| c.name == col_name).map(|c| c.sql_type).unwrap_or("TEXT");
 
             bindings.push((value, sql_type));
         }
 
+        // Generate placeholders with proper type casting for PostgreSQL
         let placeholders: Vec<String> = bindings
             .iter()
             .enumerate()
             .map(|(i, (_, sql_type))| match self.db.driver {
                 Drivers::Postgres => {
                     let idx = i + 1;
+                    // PostgreSQL requires explicit type casting for some types
                     match *sql_type {
                         "TIMESTAMPTZ" | "DateTime" => format!("${}::TIMESTAMPTZ", idx),
                         "TIMESTAMP" | "NaiveDateTime" => format!("${}::TIMESTAMP", idx),
                         "DATE" | "NaiveDate" => format!("${}::DATE", idx),
                         "TIME" | "NaiveTime" => format!("${}::TIME", idx),
+                        "UUID" => format!("${}::UUID", idx),
                         _ => format!("${}", idx),
                     }
                 }
+                // MySQL and SQLite use simple ? placeholders
                 _ => "?".to_string(),
             })
             .collect();
 
+        // Construct the INSERT query
         let query_str = format!(
             "INSERT INTO \"{}\" ({}) VALUES ({})",
             table_name,
@@ -201,12 +598,17 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
             placeholders.join(", ")
         );
 
-        // println!("{}", query_str); // Debug if needed
+        // Debug: Uncomment to see generated SQL
+        // println!("{}", query_str);
+
         let mut query = sqlx::query::<sqlx::Any>(&query_str);
 
-        // Manual binding based on string parsing
+        // Bind values with proper type conversion
         for (val_str, sql_type) in bindings {
             match sql_type {
+                // ------------------------------------------------------------
+                // Integer Types
+                // ------------------------------------------------------------
                 "INTEGER" | "INT" | "SERIAL" | "serial" | "int4" => {
                     let val: i32 = val_str.parse().unwrap_or_default();
                     query = query.bind(val);
@@ -215,14 +617,40 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
                     let val: i64 = val_str.parse().unwrap_or_default();
                     query = query.bind(val);
                 }
+
+                // ------------------------------------------------------------
+                // Boolean Type
+                // ------------------------------------------------------------
                 "BOOLEAN" | "BOOL" | "bool" => {
                     let val: bool = val_str.parse().unwrap_or(false);
                     query = query.bind(val);
                 }
+
+                // ------------------------------------------------------------
+                // Floating-Point Types
+                // ------------------------------------------------------------
                 "DOUBLE PRECISION" | "FLOAT" | "float8" => {
                     let val: f64 = val_str.parse().unwrap_or_default();
                     query = query.bind(val);
                 }
+
+                // ------------------------------------------------------------
+                // UUID Type (Versions 1-7)
+                // ------------------------------------------------------------
+                "UUID" => {
+                    // Parse the UUID string
+                    // Supports all UUID formats and versions (1-7)
+                    if let Ok(val) = val_str.parse::<Uuid>() {
+                        query = query.bind(val.to_string());
+                    } else {
+                        // Fallback: bind the raw string if parsing fails
+                        query = query.bind(val_str);
+                    }
+                }
+
+                // ------------------------------------------------------------
+                // Date/Time Types
+                // ------------------------------------------------------------
                 "TIMESTAMP" | "NaiveDateTime" => {
                     if let Ok(val) = val_str.parse::<NaiveDateTime>() {
                         query = query.bind(val.to_string());
@@ -251,26 +679,60 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
                         query = query.bind(val_str);
                     }
                 }
+
+                // ------------------------------------------------------------
+                // Text and Unknown Types
+                // ------------------------------------------------------------
+                // Default: bind as string
                 _ => query = query.bind(val_str),
             }
         }
 
+        // Execute the INSERT query
         query.execute(&self.db.pool).await?;
         Ok(&self)
     }
 
-    /// Returns the generated SQL string (for debugging purposes, without arguments).
+    // ========================================================================
+    // Query Execution Methods
+    // ========================================================================
+
+    /// Returns the generated SQL string for debugging purposes.
+    ///
+    /// This method constructs the SQL query string without executing it.
+    /// Useful for debugging and logging query construction. Note that this
+    /// shows placeholders (?, $1, etc.) rather than actual bound values.
+    ///
+    /// # Returns
+    ///
+    /// A `String` containing the SQL query that would be executed
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let query = db.model::<User>()
+    ///     .filter("age", ">=", 18)
+    ///     .order("created_at DESC")
+    ///     .limit(10);
+    ///
+    /// println!("SQL: {}", query.to_sql());
+    /// // Output: SELECT * FROM "user" WHERE 1=1 AND "age" >= $1 ORDER BY created_at DESC
+    /// ```
     pub fn to_sql(&self) -> String {
         let mut query = String::from("SELECT ");
+
+        // Handle column selection
         if self.select_columns.is_empty() {
             query.push('*');
         } else {
             query.push_str(&self.select_columns.join(", "));
         }
+
         query.push_str(" FROM \"");
         query.push_str(&self.table_name.to_snake_case());
         query.push_str("\" WHERE 1=1");
 
+        // Apply WHERE clauses with dummy arguments
         let mut dummy_args = AnyArguments::default();
         let mut dummy_counter = 1;
 
@@ -278,6 +740,7 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
             clause(&mut query, &mut dummy_args, &self.db.driver, &mut dummy_counter);
         }
 
+        // Apply ORDER BY if present
         if !self.order_clauses.is_empty() {
             query.push_str(&format!(" ORDER BY {}", &self.order_clauses.join(", ")));
         }
@@ -287,25 +750,60 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
 
     /// Executes the query and returns a list of results.
     ///
+    /// This method builds and executes a SELECT query with all accumulated filters,
+    /// ordering, and pagination settings. It returns all matching rows as a vector.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `R` - The result type. Must implement `FromRow` for deserialization from database rows.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(Vec<R>)` - Vector of results (empty if no matches)
+    /// * `Err(sqlx::Error)` - Database error during query execution
+    ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// let users: Vec<User> = db.model::<User>().scan().await?;
+    /// // Get all adult users, ordered by age, limited to 10
+    /// let users: Vec<User> = db.model::<User>()
+    ///     .filter("age", ">=", 18)
+    ///     .order("age DESC")
+    ///     .limit(10)
+    ///     .scan()
+    ///     .await?;
+    ///
+    /// // Get users by UUID
+    /// let user_id = Uuid::parse_str("550e8400-e29b-41d4-a716-446655440000")?;
+    /// let users: Vec<User> = db.model::<User>()
+    ///     .filter("id", "=", user_id)
+    ///     .scan()
+    ///     .await?;
+    ///
+    /// // Empty result is Ok
+    /// let results: Vec<User> = db.model::<User>()
+    ///     .filter("age", ">", 200)
+    ///     .scan()
+    ///     .await?;  // Returns empty Vec, not an error
     /// ```
     pub async fn scan<R>(self) -> Result<Vec<R>, sqlx::Error>
     where
         R: for<'r> FromRow<'r, AnyRow> + Send + Unpin,
     {
+        // Build SELECT clause
         let mut query = String::from("SELECT ");
         if self.select_columns.is_empty() {
             query.push('*');
         } else {
             query.push_str(&self.select_columns.join(", "));
         }
+
+        // Build FROM clause
         query.push_str(" FROM \"");
         query.push_str(&self.table_name.to_snake_case());
         query.push_str("\" WHERE 1=1");
 
+        // Apply WHERE clauses
         let mut args = AnyArguments::default();
         let mut arg_counter = 1;
 
@@ -313,6 +811,7 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
             clause(&mut query, &mut args, &self.db.driver, &mut arg_counter);
         }
 
+        // Apply LIMIT clause
         if let Some(limit) = self.limit {
             query.push_str(" LIMIT ");
             match self.db.driver {
@@ -322,47 +821,93 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
                 }
                 _ => query.push('?'),
             }
-            args.add(limit as i64);
+            let _ = args.add(limit as i64);
         }
 
+        // Apply OFFSET clause
         if let Some(offset) = self.offset {
             query.push_str(" OFFSET ");
             match self.db.driver {
                 Drivers::Postgres => {
                     query.push_str(&format!("${}", arg_counter));
-                    // arg_counter += 1; // Ignored as it is last usage
+                    // arg_counter += 1; // Not needed as this is the last clause
                 }
                 _ => query.push('?'),
             }
-            args.add(offset as i64);
+            let _ = args.add(offset as i64);
         }
 
+        // Execute query and fetch all results
         sqlx::query_as_with::<_, R, _>(&query, args).fetch_all(&self.db.pool).await
     }
 
     /// Executes the query and returns only the first result.
     ///
-    /// Automatically adds `LIMIT 1` and orders by Primary Key if available.
+    /// This method automatically adds `LIMIT 1` and orders by the Primary Key
+    /// (if available) to ensure consistent results. It's optimized for fetching
+    /// a single row and will return an error if no rows match.
+    ///
+    /// # Type Parameters
+    ///
+    /// * `R` - The result type. Must implement `FromRow` for deserialization.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(R)` - The first matching row
+    /// * `Err(sqlx::Error)` - No rows found or database error
+    ///
+    /// # Error Handling
+    ///
+    /// Returns `sqlx::Error::RowNotFound` if no rows match the query.
+    /// Use `scan()` instead if you want an empty Vec rather than an error.
     ///
     /// # Example
     ///
     /// ```rust,ignore
-    /// let user: User = db.model::<User>().filter("id", "=", 1).first().await?;
+    /// // Get a specific user by ID
+    /// let user: User = db.model::<User>()
+    ///     .filter("id", "=", 1)
+    ///     .first()
+    ///     .await?;
+    ///
+    /// // Get user by UUID
+    /// let user_id = Uuid::new_v4();
+    /// let user: User = db.model::<User>()
+    ///     .filter("id", "=", user_id)
+    ///     .first()
+    ///     .await?;
+    ///
+    /// // Get the oldest user
+    /// let oldest: User = db.model::<User>()
+    ///     .order("age DESC")
+    ///     .first()
+    ///     .await?;
+    ///
+    /// // Error handling
+    /// match db.model::<User>().filter("id", "=", 999).first().await {
+    ///     Ok(user) => println!("Found: {:?}", user),
+    ///     Err(sqlx::Error::RowNotFound) => println!("User not found"),
+    ///     Err(e) => println!("Database error: {}", e),
+    /// }
     /// ```
     pub async fn first<R>(self) -> Result<R, sqlx::Error>
     where
         R: for<'r> FromRow<'r, AnyRow> + Send + Unpin,
     {
+        // Build SELECT clause
         let mut query = String::from("SELECT ");
         if self.select_columns.is_empty() {
             query.push('*');
         } else {
             query.push_str(&self.select_columns.join(", "));
         }
+
+        // Build FROM clause
         query.push_str(" FROM \"");
         query.push_str(&self.table_name.to_snake_case());
         query.push_str("\" WHERE 1=1");
 
+        // Apply WHERE clauses
         let mut args = AnyArguments::default();
         let mut arg_counter = 1;
 
@@ -370,19 +915,23 @@ impl<'a, T: Model + Send + Sync + Unpin> QueryBuilder<'a, T> {
             clause(&mut query, &mut args, &self.db.driver, &mut arg_counter);
         }
 
+        // Find primary key column for consistent ordering
         let pk_column = T::columns()
             .iter()
             .find(|c| c.is_primary_key)
             .map(|c| c.name.strip_prefix("r#").unwrap_or(c.name).to_snake_case());
 
+        // Order by primary key if available (ensures deterministic results)
         if let Some(pk) = pk_column {
             query.push_str(" ORDER BY \"");
             query.push_str(&pk);
             query.push_str("\" ASC");
         }
 
+        // Always add LIMIT 1 for first() queries
         query.push_str(" LIMIT 1");
 
+        // Execute query and fetch exactly one result
         sqlx::query_as_with::<_, R, _>(&query, args).fetch_one(&self.db.pool).await
     }
 }
