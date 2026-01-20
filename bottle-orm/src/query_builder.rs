@@ -60,7 +60,11 @@ use uuid::Uuid;
 // ============================================================================
 
 use crate::{
-    AnyImpl, Error, database::{Connection, Drivers}, model::{ColumnInfo, Model}, temporal::{self, is_temporal_type}, value_binding::ValueBinder
+    database::{Connection, Drivers},
+    model::{ColumnInfo, Model},
+    temporal::{self, is_temporal_type},
+    value_binding::ValueBinder,
+    AnyImpl, Error,
 };
 
 // ============================================================================
@@ -122,7 +126,7 @@ pub type FilterFn = Box<dyn Fn(&mut String, &mut AnyArguments<'_>, &Drivers, &mu
 /// * `_marker` - PhantomData to bind the generic type T
 pub struct QueryBuilder<'a, T, E>
 where
-	E: Connection,
+    E: Connection,
 {
     /// Reference to the database connection pool
     pub(crate) tx: E,
@@ -144,6 +148,9 @@ where
 
     /// Collection of ORDER BY clauses
     pub(crate) order_clauses: Vec<String>,
+    
+    /// Collection of JOIN clause to filter entry tables
+    pub(crate) joins_clauses: Vec<String>,
 
     /// Maximum number of rows to return (LIMIT)
     pub(crate) limit: Option<usize>,
@@ -190,12 +197,7 @@ where
     /// // Usually called via db.model::<User>()
     /// let query = db.model::<User>();
     /// ```
-    pub fn new(
-        tx: E,
-        table_name: &'static str,
-        columns_info: Vec<ColumnInfo>,
-        columns: Vec<String>,
-    ) -> Self {
+    pub fn new(tx: E, table_name: &'static str, columns_info: Vec<ColumnInfo>, columns: Vec<String>) -> Self {
         Self {
             tx,
             table_name,
@@ -204,6 +206,7 @@ where
             select_columns: Vec::new(),
             where_clauses: Vec::new(),
             order_clauses: Vec::new(),
+            joins_clauses: Vec::new(),
             limit: None,
             offset: None,
             _marker: PhantomData,
@@ -288,7 +291,7 @@ where
         self.where_clauses.push(clause);
         self
     }
-    
+
     /// Adds an equality filter to the query.
     ///
     /// This is a convenience wrapper around `filter()` for simple equality checks.
@@ -310,10 +313,10 @@ where
     /// query.equals("age", 18)
     /// ```
     pub fn equals<V>(self, col: &'static str, value: V) -> Self
-    where 
-    	V: 'static + for<'q> Encode<'q, Any> + Type<Any> + Send + Sync + Clone
+    where
+        V: 'static + for<'q> Encode<'q, Any> + Type<Any> + Send + Sync + Clone,
     {
-    	self.filter(col, "=", value)
+        self.filter(col, "=", value)
     }
 
     /// Adds an ORDER BY clause to the query.
@@ -895,6 +898,12 @@ where
             clause(&mut query, &mut args, &self.tx.driver(), &mut arg_counter);
         }
 
+        // Apply ORDER BY clauses
+        // We join multiple clauses with commas to form a valid SQL ORDER BY statement
+        if !self.order_clauses.is_empty() {
+            query.push_str(&format!(" ORDER BY {}", self.order_clauses.join(", ")));
+        }
+
         // Apply LIMIT clause
         if let Some(limit) = self.limit {
             query.push_str(" LIMIT ");
@@ -920,7 +929,7 @@ where
             }
             let _ = args.add(offset as i64);
         }
-
+        
         // Execute query and fetch all results
         sqlx::query_as_with::<_, R, _>(&query, args).fetch_all(self.tx.executor()).await
     }
@@ -994,15 +1003,19 @@ where
         for clause in &self.where_clauses {
             clause(&mut query, &mut args, &self.tx.driver(), &mut arg_counter);
         }
-
+        
         // Find primary key column for consistent ordering
         let pk_column = T::columns()
             .iter()
             .find(|c| c.is_primary_key)
             .map(|c| c.name.strip_prefix("r#").unwrap_or(c.name).to_snake_case());
 
-        // Order by primary key if available (ensures deterministic results)
-        if let Some(pk) = pk_column {
+        // Apply ORDER BY clauses
+        // We join multiple clauses with commas to form a valid SQL ORDER BY statement
+        if !self.order_clauses.is_empty() {
+            query.push_str(&format!(" ORDER BY {}", self.order_clauses.join(", ")));
+        } else if let Some(pk) = pk_column {
+            // Fallback to PK ordering if no custom order is specified (ensures deterministic results)
             query.push_str(" ORDER BY \"");
             query.push_str(&pk);
             query.push_str("\" ASC");
@@ -1065,7 +1078,7 @@ where
         for clause in &self.where_clauses {
             clause(&mut query, &mut args, &self.tx.driver(), &mut arg_counter);
         }
-
+        
         // Apply ORDER BY
         if !self.order_clauses.is_empty() {
             query.push_str(&format!(" ORDER BY {}", &self.order_clauses.join(", ")));

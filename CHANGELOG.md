@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.2-rc.3] - 2026-01-20
+
+### Added
+- **JOIN Support Preparation**: Added `joins_clauses` field to `QueryBuilder` structure to support future JOIN operations.
+
+### Fixed
+- **Query Builder Ordering**: Fixed `ORDER BY` clauses not being applied in `scan()` and `first()` methods.
+- **SQL Generation**: Fixed invalid SQL generation when multiple `order()` calls are chained (now correctly comma-separated).
+- **Deterministic Ordering**: Improved `first()` method to strictly respect user ordering if provided, falling back to Primary Key ordering only when no specific order is requested.
+
+
 ### Added
 
 #### AnyImpl & FromAnyRow Support
