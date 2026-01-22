@@ -672,3 +672,21 @@ impl Connection for Database {
         &self.pool
     }
 }
+
+/// Implementation of Connection for any mutable reference to a type implementing Connection.
+///
+/// This allows passing `&mut Database` or `&mut Transaction` where `Connection` is expected.
+impl<'a, T> Connection for &'a mut T
+where
+       T: Connection + Send + Unpin,{
+	type Exec<'c> = T::Exec<'c>
+    where
+        Self: 'c;
+    fn driver(&self) -> Drivers {
+        (**self).driver()
+    }
+    
+    fn executor<'c>(&'c mut self) -> Self::Exec<'c> {
+        (**self).executor()
+    }
+}

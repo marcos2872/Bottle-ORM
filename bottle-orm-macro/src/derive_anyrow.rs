@@ -32,7 +32,7 @@ pub fn expand(input: DeriveInput) -> TokenStream {
     };
 
     // Generate logic for extracting each field from the row
-    let ext_logic = fields.iter().map(|f| {
+	    let ext_logic = fields.iter().map(|f| {
         let field_name = &f.ident;
         let field_type = &f.ty;
         let column_name = field_name.as_ref().unwrap().to_string();

@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-01-22
+
+### Fixed
+- **Transaction Implementation**: Fixed a bug in `Transaction` implementation where `Connection` was implemented for `&mut Transaction` instead of `Transaction`, which caused issues with borrow checker and usage in `QueryBuilder`.
+- **Connection Trait**: Added blanket implementation of `Connection` for `&'a mut T` where `T: Connection`, improving ergonomics.
+
 ## [0.3.1] - 2026-01-21
 
 ### Changed
