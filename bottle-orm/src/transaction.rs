@@ -119,7 +119,7 @@ impl<'a> Transaction<'a> {
     ///
     /// tx.commit().await?;
     /// ```
-    pub fn model<T: Model + Send + Sync + Unpin>(&mut self) -> QueryBuilder<'a, T, &mut Self> {
+    pub fn model<T: Model + Send + Sync + Unpin>(&mut self) -> QueryBuilder<'_, T, &mut Self> {
         // Get active column names from the model
         let active_columns = T::active_columns();
         let mut columns: Vec<String> = Vec::with_capacity(active_columns.capacity());

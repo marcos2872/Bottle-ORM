@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-01-22
+
+### Fixed
+- **Transaction Model Lifetime**: Resolved a critical lifetime issue in `Transaction::model` that prevented the ORM from being used effectively in async handlers (like Axum) due to "implementation is not general enough" errors.
+  - `QueryBuilder` now takes ownership of the connection handle (`E`) instead of a mutable reference (`&mut E`).
+  - This allows `Database` (cloned) and `&mut Transaction` to be used interchangeably without lifetime conflicts.
+
 ## [0.3.2] - 2026-01-22
 
 ### Fixed
