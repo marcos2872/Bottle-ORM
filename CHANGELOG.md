@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.4] - 2026-01-22
+
+### Fixed
+- **Lifetime "Implementation not general enough" Error**: Resolved a critical compilation error when using `QueryBuilder` methods (like `insert`, `update`, `first`, `scan`) in async contexts such as `axum` handlers.
+  - This was caused by higher-ranked trait bounds (HRTB) on the `Connection` trait and implicit future lifetimes.
+  - **Refactored `QueryBuilder`**: It now stores the `driver` explicitly and handles the connection generic `E` more flexibly.
+  - **Explicit Future Lifetimes**: Async methods in `QueryBuilder` (`insert`, `update`, `updates`, `update_partial`, `execute_update`) now return `BoxFuture<'b, ...>` to explicitly bind the future's lifetime to the `self` borrow.
+- **Connection Trait**: Simplified by removing the `driver()` method, reducing trait complexity.
+- **Transaction**: Improved `Transaction` implementation to allow `&mut Transaction` to work seamlessly with `QueryBuilder`.
+
 ## [0.3.3] - 2026-01-22
 
 ### Fixed

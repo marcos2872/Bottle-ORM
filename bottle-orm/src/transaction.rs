@@ -36,9 +36,11 @@ use heck::ToSnakeCase;
 // ============================================================================
 
 use crate::{
+    any_struct::AnyImpl,
     database::{Connection, Drivers},
     Model, QueryBuilder,
 };
+use sqlx::{any::AnyRow, FromRow};
 
 // ============================================================================
 // Transaction Struct
@@ -77,12 +79,19 @@ impl<'a> Connection for Transaction<'a> {
     where
         Self: 'c;
 
-    fn driver(&self) -> Drivers {
-        self.driver
-    }
-
     fn executor<'c>(&'c mut self) -> Self::Exec<'c> {
         &mut *self.tx
+    }
+}
+
+/// Implementation of Connection for a mutable reference to Transaction.
+impl<'a, 'b> Connection for &'a mut Transaction<'b> {
+    type Exec<'c> = &'c mut sqlx::AnyConnection
+    where
+        Self: 'c;
+
+    fn executor<'c>(&'c mut self) -> Self::Exec<'c> {
+        (**self).executor()
     }
 }
 
@@ -119,7 +128,7 @@ impl<'a> Transaction<'a> {
     ///
     /// tx.commit().await?;
     /// ```
-    pub fn model<T: Model + Send + Sync + Unpin>(&mut self) -> QueryBuilder<'_, T, &mut Self> {
+    pub fn model<T: Model + Send + Sync + Unpin>(&mut self) -> QueryBuilder<'a, T, &mut sqlx::Transaction<'a, sqlx::Any>> {
         // Get active column names from the model
         let active_columns = T::active_columns();
         let mut columns: Vec<String> = Vec::with_capacity(active_columns.capacity());
@@ -130,7 +139,7 @@ impl<'a> Transaction<'a> {
         }
 
         // Create and return the query builder
-        QueryBuilder::new(self, T::table_name(), T::columns(), columns)
+        QueryBuilder::new(&mut self.tx, self.driver, T::table_name(), T::columns(), columns)
     }
 
     // ========================================================================

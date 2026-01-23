@@ -270,7 +270,7 @@ impl Database {
 
         Ok(Self { pool, driver })
     }
-    
+
     // ========================================================================
     // Schema Management
     // ========================================================================
@@ -359,7 +359,7 @@ impl Database {
         }
 
         // Create and return the query builder
-        QueryBuilder::new(self.clone(), T::table_name(), T::columns(), columns)
+        QueryBuilder::new(self.clone(), self.driver, T::table_name(), T::columns(), columns)
     }
 
     // ========================================================================
@@ -653,9 +653,6 @@ pub trait Connection {
     ///
     /// An executor capable of running SQL queries (either a Pool or a Transaction).
     fn executor<'c>(&'c mut self) -> Self::Exec<'c>;
-
-    /// Returns the driver type associated with this connection.
-    fn driver(&self) -> Drivers;
 }
 
 /// Implementation of Connection for the main Database struct.
@@ -664,29 +661,29 @@ pub trait Connection {
 impl Connection for Database {
     type Exec<'c> = &'c sqlx::Pool<sqlx::Any>;
 
-    fn driver(&self) -> Drivers {
-        self.driver
+    fn executor<'c>(&'c mut self) -> Self::Exec<'c> {
+        &self.pool
     }
+}
+
+/// Implementation of Connection for a mutable reference to Database.
+impl<'a> Connection for &'a mut Database {
+    type Exec<'c> = &'c sqlx::Pool<sqlx::Any>
+    where
+        Self: 'c;
 
     fn executor<'c>(&'c mut self) -> Self::Exec<'c> {
         &self.pool
     }
 }
 
-/// Implementation of Connection for any mutable reference to a type implementing Connection.
-///
-/// This allows passing `&mut Database` or `&mut Transaction` where `Connection` is expected.
-impl<'a, T> Connection for &'a mut T
-where
-       T: Connection + Send + Unpin,{
-	type Exec<'c> = T::Exec<'c>
+/// Implementation of Connection for a mutable reference to sqlx::Transaction.
+impl<'a> Connection for &mut sqlx::Transaction<'a, sqlx::Any> {
+    type Exec<'c> = &'c mut sqlx::AnyConnection
     where
         Self: 'c;
-    fn driver(&self) -> Drivers {
-        (**self).driver()
-    }
-    
+
     fn executor<'c>(&'c mut self) -> Self::Exec<'c> {
-        (**self).executor()
+        &mut **self
     }
 }

@@ -47,6 +47,7 @@
 // External Crate Imports
 // ============================================================================
 
+use futures::future::BoxFuture;
 use heck::ToSnakeCase;
 use sqlx::{
     any::{AnyArguments, AnyRow},
@@ -124,12 +125,12 @@ pub type FilterFn = Box<dyn Fn(&mut String, &mut AnyArguments<'_>, &Drivers, &mu
 /// * `limit` - Maximum number of rows to return
 /// * `offset` - Number of rows to skip (for pagination)
 /// * `_marker` - PhantomData to bind the generic type T
-pub struct QueryBuilder<'a, T, E>
-where
-    E: Connection,
-{
+pub struct QueryBuilder<'a, T, E> {
     /// Reference to the database connection pool
     pub(crate) tx: E,
+
+    /// Database driver type
+    pub(crate) driver: Drivers,
 
     /// Name of the database table (in original case)
     pub(crate) table_name: &'static str,
@@ -172,7 +173,7 @@ where
 impl<'a, T, E> QueryBuilder<'a, T, E>
 where
     T: Model + Send + Sync + Unpin,
-    E: Connection,
+    E: Connection + Send,
 {
     // ========================================================================
     // Constructor
@@ -200,9 +201,16 @@ where
     /// // Usually called via db.model::<User>()
     /// let query = db.model::<User>();
     /// ```
-    pub fn new(tx: E, table_name: &'static str, columns_info: Vec<ColumnInfo>, columns: Vec<String>) -> Self {
+    pub fn new(
+        tx: E,
+        driver: Drivers,
+        table_name: &'static str,
+        columns_info: Vec<ColumnInfo>,
+        columns: Vec<String>,
+    ) -> Self {
         Self {
             tx,
+            driver,
             table_name,
             columns_info,
             columns,
@@ -423,7 +431,18 @@ where
     /// query.join("posts", "users.id = posts.user_id")
     /// ```
     pub fn join(mut self, table: &str, s_query: &str) -> Self {
-        self.joins_clauses.push(format!("JOIN {} ON {}", table, s_query));
+        let trimmed_value = s_query.replace(" ", "");
+        let values = trimmed_value.split_once("=");
+        let parsed_query: String;
+        if let Some((first, second)) = values {
+        	let ref_table = first.split_once(".").expect("failed to parse JOIN clause");
+         	let to_table = second.split_once(".").expect("failed to parse JOIN clause");
+         	parsed_query = format!("\"{}\".\"{}\" = \"{}\".\"{}\"", ref_table.0, ref_table.1, to_table.0, to_table.1);
+        } else {
+        	panic!("Failed to parse JOIN, Ex to use: .join(\"table2\", \"table.column = table2.column2\")")
+        }
+
+        self.joins_clauses.push(format!("JOIN \"{}\" ON {}", table, parsed_query));
         self
     }
 
@@ -617,162 +636,164 @@ where
     ///
     /// db.model::<User>().insert(&new_user).await?;
     /// ```
-    pub async fn insert(&mut self, model: &T) -> Result<(), sqlx::Error> {
-        // Serialize model to a HashMap of column_name -> string_value
-        let data_map = model.to_map();
+    pub fn insert<'b>(&'b mut self, model: &'b T) -> BoxFuture<'b, Result<(), sqlx::Error>> {
+        Box::pin(async move {
+            // Serialize model to a HashMap of column_name -> string_value
+            let data_map = model.to_map();
 
-        // Early return if no data to insert
-        if data_map.is_empty() {
-            return Ok(());
-        }
-
-        let table_name = self.table_name.to_snake_case();
-        let columns_info = T::columns();
-
-        let mut target_columns = Vec::new();
-        let mut bindings: Vec<(String, &str)> = Vec::new();
-
-        // Build column list and collect values with their SQL types
-        for (col_name, value) in data_map {
-            // Strip the "r#" prefix if present (for Rust keywords used as field names)
-            let col_name_clean = col_name.strip_prefix("r#").unwrap_or(&col_name).to_snake_case();
-            target_columns.push(format!("\"{}\"", col_name_clean));
-
-            // Find the SQL type for this column
-            let sql_type = columns_info.iter().find(|c| c.name == col_name).map(|c| c.sql_type).unwrap_or("TEXT");
-
-            bindings.push((value, sql_type));
-        }
-
-        // Generate placeholders with proper type casting for PostgreSQL
-        let placeholders: Vec<String> = bindings
-            .iter()
-            .enumerate()
-            .map(|(i, (_, sql_type))| match self.tx.driver() {
-                Drivers::Postgres => {
-                    let idx = i + 1;
-                    // PostgreSQL requires explicit type casting for some types
-                    if temporal::is_temporal_type(sql_type) {
-                        // Use temporal module for type casting
-                        format!("${}{}", idx, temporal::get_postgres_type_cast(sql_type))
-                    } else {
-                        match *sql_type {
-                            "UUID" => format!("${}::UUID", idx),
-                            _ => format!("${}", idx),
-                        }
-                    }
-                }
-                // MySQL and SQLite use simple ? placeholders
-                _ => "?".to_string(),
-            })
-            .collect();
-
-        // Construct the INSERT query
-        let query_str = format!(
-            "INSERT INTO \"{}\" ({}) VALUES ({})",
-            table_name,
-            target_columns.join(", "),
-            placeholders.join(", ")
-        );
-
-        // If debug mode is enabled, log the generated SQL query before execution
-        if self.debug_mode {
-            log::debug!("SQL: {}", query_str);
-        }
-
-        let mut query = sqlx::query::<sqlx::Any>(&query_str);
-
-        // Bind values using the optimized value_binding module
-        // This provides type-safe binding with driver-specific optimizations
-        for (val_str, sql_type) in bindings {
-            // Create temporary AnyArguments to collect the bound value
-            let mut temp_args = AnyArguments::default();
-
-            // Use the ValueBinder trait for type-safe binding
-            if temp_args.bind_value(&val_str, sql_type, &self.tx.driver()).is_ok() {
-                // For now, we need to convert back to individual bindings
-                // This is a workaround until we can better integrate AnyArguments
-                match sql_type {
-                    "INTEGER" | "INT" | "SERIAL" | "serial" | "int4" => {
-                        if let Ok(val) = val_str.parse::<i32>() {
-                            query = query.bind(val);
-                        } else {
-                            query = query.bind(val_str);
-                        }
-                    }
-                    "BIGINT" | "INT8" | "int8" | "BIGSERIAL" => {
-                        if let Ok(val) = val_str.parse::<i64>() {
-                            query = query.bind(val);
-                        } else {
-                            query = query.bind(val_str);
-                        }
-                    }
-                    "BOOLEAN" | "BOOL" | "bool" => {
-                        if let Ok(val) = val_str.parse::<bool>() {
-                            query = query.bind(val);
-                        } else {
-                            query = query.bind(val_str);
-                        }
-                    }
-                    "DOUBLE PRECISION" | "FLOAT" | "float8" | "REAL" | "NUMERIC" | "DECIMAL" => {
-                        if let Ok(val) = val_str.parse::<f64>() {
-                            query = query.bind(val);
-                        } else {
-                            query = query.bind(val_str);
-                        }
-                    }
-                    "UUID" => {
-                        if let Ok(val) = val_str.parse::<Uuid>() {
-                            query = query.bind(val.hyphenated().to_string());
-                        } else {
-                            query = query.bind(val_str);
-                        }
-                    }
-                    "TIMESTAMPTZ" | "DateTime" => {
-                        if let Ok(val) = temporal::parse_datetime_utc(&val_str) {
-                            let formatted = temporal::format_datetime_for_driver(&val, &self.tx.driver());
-                            query = query.bind(formatted);
-                        } else {
-                            query = query.bind(val_str);
-                        }
-                    }
-                    "TIMESTAMP" | "NaiveDateTime" => {
-                        if let Ok(val) = temporal::parse_naive_datetime(&val_str) {
-                            let formatted = temporal::format_naive_datetime_for_driver(&val, &self.tx.driver());
-                            query = query.bind(formatted);
-                        } else {
-                            query = query.bind(val_str);
-                        }
-                    }
-                    "DATE" | "NaiveDate" => {
-                        if let Ok(val) = temporal::parse_naive_date(&val_str) {
-                            let formatted = val.format("%Y-%m-%d").to_string();
-                            query = query.bind(formatted);
-                        } else {
-                            query = query.bind(val_str);
-                        }
-                    }
-                    "TIME" | "NaiveTime" => {
-                        if let Ok(val) = temporal::parse_naive_time(&val_str) {
-                            let formatted = val.format("%H:%M:%S%.6f").to_string();
-                            query = query.bind(formatted);
-                        } else {
-                            query = query.bind(val_str);
-                        }
-                    }
-                    _ => {
-                        query = query.bind(val_str);
-                    }
-                }
-            } else {
-                // Fallback: bind as string if type conversion fails
-                query = query.bind(val_str);
+            // Early return if no data to insert
+            if data_map.is_empty() {
+                return Ok(());
             }
-        }
 
-        // Execute the INSERT query
-        query.execute(self.tx.executor()).await?;
-        Ok(())
+            let table_name = self.table_name.to_snake_case();
+            let columns_info = T::columns();
+
+            let mut target_columns = Vec::new();
+            let mut bindings: Vec<(String, &str)> = Vec::new();
+
+            // Build column list and collect values with their SQL types
+            for (col_name, value) in data_map {
+                // Strip the "r#" prefix if present (for Rust keywords used as field names)
+                let col_name_clean = col_name.strip_prefix("r#").unwrap_or(&col_name).to_snake_case();
+                target_columns.push(format!("\"{}\"", col_name_clean));
+
+                // Find the SQL type for this column
+                let sql_type = columns_info.iter().find(|c| c.name == col_name).map(|c| c.sql_type).unwrap_or("TEXT");
+
+                bindings.push((value, sql_type));
+            }
+
+            // Generate placeholders with proper type casting for PostgreSQL
+            let placeholders: Vec<String> = bindings
+                .iter()
+                .enumerate()
+                .map(|(i, (_, sql_type))| match self.driver {
+                    Drivers::Postgres => {
+                        let idx = i + 1;
+                        // PostgreSQL requires explicit type casting for some types
+                        if temporal::is_temporal_type(sql_type) {
+                            // Use temporal module for type casting
+                            format!("${}{}", idx, temporal::get_postgres_type_cast(sql_type))
+                        } else {
+                            match *sql_type {
+                                "UUID" => format!("${}::UUID", idx),
+                                _ => format!("${}", idx),
+                            }
+                        }
+                    }
+                    // MySQL and SQLite use simple ? placeholders
+                    _ => "?".to_string(),
+                })
+                .collect();
+
+            // Construct the INSERT query
+            let query_str = format!(
+                "INSERT INTO \"{}\" ({}) VALUES ({})",
+                table_name,
+                target_columns.join(", "),
+                placeholders.join(", ")
+            );
+
+            // If debug mode is enabled, log the generated SQL query before execution
+            if self.debug_mode {
+                log::debug!("SQL: {}", query_str);
+            }
+
+            let mut query = sqlx::query::<sqlx::Any>(&query_str);
+
+            // Bind values using the optimized value_binding module
+            // This provides type-safe binding with driver-specific optimizations
+            for (val_str, sql_type) in bindings {
+                // Create temporary AnyArguments to collect the bound value
+                let mut temp_args = AnyArguments::default();
+
+                // Use the ValueBinder trait for type-safe binding
+                if temp_args.bind_value(&val_str, sql_type, &self.driver).is_ok() {
+                    // For now, we need to convert back to individual bindings
+                    // This is a workaround until we can better integrate AnyArguments
+                    match sql_type {
+                        "INTEGER" | "INT" | "SERIAL" | "serial" | "int4" => {
+                            if let Ok(val) = val_str.parse::<i32>() {
+                                query = query.bind(val);
+                            } else {
+                                query = query.bind(val_str);
+                            }
+                        }
+                        "BIGINT" | "INT8" | "int8" | "BIGSERIAL" => {
+                            if let Ok(val) = val_str.parse::<i64>() {
+                                query = query.bind(val);
+                            } else {
+                                query = query.bind(val_str);
+                            }
+                        }
+                        "BOOLEAN" | "BOOL" | "bool" => {
+                            if let Ok(val) = val_str.parse::<bool>() {
+                                query = query.bind(val);
+                            } else {
+                                query = query.bind(val_str);
+                            }
+                        }
+                        "DOUBLE PRECISION" | "FLOAT" | "float8" | "REAL" | "NUMERIC" | "DECIMAL" => {
+                            if let Ok(val) = val_str.parse::<f64>() {
+                                query = query.bind(val);
+                            } else {
+                                query = query.bind(val_str);
+                            }
+                        }
+                        "UUID" => {
+                            if let Ok(val) = val_str.parse::<Uuid>() {
+                                query = query.bind(val.hyphenated().to_string());
+                            } else {
+                                query = query.bind(val_str);
+                            }
+                        }
+                        "TIMESTAMPTZ" | "DateTime" => {
+                            if let Ok(val) = temporal::parse_datetime_utc(&val_str) {
+                                let formatted = temporal::format_datetime_for_driver(&val, &self.driver);
+                                query = query.bind(formatted);
+                            } else {
+                                query = query.bind(val_str);
+                            }
+                        }
+                        "TIMESTAMP" | "NaiveDateTime" => {
+                            if let Ok(val) = temporal::parse_naive_datetime(&val_str) {
+                                let formatted = temporal::format_naive_datetime_for_driver(&val, &self.driver);
+                                query = query.bind(formatted);
+                            } else {
+                                query = query.bind(val_str);
+                            }
+                        }
+                        "DATE" | "NaiveDate" => {
+                            if let Ok(val) = temporal::parse_naive_date(&val_str) {
+                                let formatted = val.format("%Y-%m-%d").to_string();
+                                query = query.bind(formatted);
+                            } else {
+                                query = query.bind(val_str);
+                            }
+                        }
+                        "TIME" | "NaiveTime" => {
+                            if let Ok(val) = temporal::parse_naive_time(&val_str) {
+                                let formatted = val.format("%H:%M:%S%.6f").to_string();
+                                query = query.bind(formatted);
+                            } else {
+                                query = query.bind(val_str);
+                            }
+                        }
+                        _ => {
+                            query = query.bind(val_str);
+                        }
+                    }
+                } else {
+                    // Fallback: bind as string if type conversion fails
+                    query = query.bind(val_str);
+                }
+            }
+
+            // Execute the INSERT query
+            query.execute(self.tx.executor()).await?;
+            Ok(())
+        })
     }
 
     // ========================================================================
@@ -819,7 +840,7 @@ where
         let mut dummy_counter = 1;
 
         for clause in &self.where_clauses {
-            clause(&mut query, &mut dummy_args, &self.tx.driver(), &mut dummy_counter);
+            clause(&mut query, &mut dummy_args, &self.driver, &mut dummy_counter);
         }
 
         // Apply ORDER BY if present
@@ -965,7 +986,7 @@ where
         let mut arg_counter = 1;
 
         for clause in &self.where_clauses {
-            clause(&mut query, &mut args, &self.tx.driver(), &mut arg_counter);
+            clause(&mut query, &mut args, &self.driver, &mut arg_counter);
         }
 
         // Apply ORDER BY clauses
@@ -977,7 +998,7 @@ where
         // Apply LIMIT clause
         if let Some(limit) = self.limit {
             query.push_str(" LIMIT ");
-            match self.tx.driver() {
+            match self.driver {
                 Drivers::Postgres => {
                     query.push_str(&format!("${}", arg_counter));
                     arg_counter += 1;
@@ -990,7 +1011,7 @@ where
         // Apply OFFSET clause
         if let Some(offset) = self.offset {
             query.push_str(" OFFSET ");
-            match self.tx.driver() {
+            match self.driver {
                 Drivers::Postgres => {
                     query.push_str(&format!("${}", arg_counter));
                     // arg_counter += 1; // Not needed as this is the last clause
@@ -1081,7 +1102,7 @@ where
         let mut arg_counter = 1;
 
         for clause in &self.where_clauses {
-            clause(&mut query, &mut args, &self.tx.driver(), &mut arg_counter);
+            clause(&mut query, &mut args, &self.driver, &mut arg_counter);
         }
 
         // Find primary key column for consistent ordering
@@ -1105,9 +1126,7 @@ where
         query.push_str(" LIMIT 1");
 
         // Print SQL query to logs if debug mode is active
-        if self.debug_mode {
-            log::debug!("SQL: {}", query);
-        }
+        log::debug!("SQL: {}", query);
 
         // Execute query and fetch exactly one result
         sqlx::query_as_with::<_, R, _>(&query, args).fetch_one(self.tx.executor()).await
@@ -1180,7 +1199,7 @@ where
         let mut arg_counter = 1;
 
         for clause in &self.where_clauses {
-            clause(&mut query, &mut args, &self.tx.driver(), &mut arg_counter);
+            clause(&mut query, &mut args, &self.driver, &mut arg_counter);
         }
 
         // Apply ORDER BY
@@ -1213,13 +1232,13 @@ where
     /// # Returns
     ///
     /// * `Ok(u64)` - The number of rows affected
-    pub async fn update<V>(&mut self, col: &str, value: V) -> Result<u64, sqlx::Error>
+    pub fn update<'b, V>(&'b mut self, col: &str, value: V) -> BoxFuture<'b, Result<u64, sqlx::Error>>
     where
         V: ToString + Send + Sync,
     {
         let mut map = std::collections::HashMap::new();
         map.insert(col.to_string(), value.to_string());
-        self.execute_update(map).await
+        self.execute_update(map)
     }
 
     /// Updates all columns based on the model instance.
@@ -1233,8 +1252,8 @@ where
     /// # Returns
     ///
     /// * `Ok(u64)` - The number of rows affected
-    pub async fn updates(&mut self, model: &T) -> Result<u64, sqlx::Error> {
-        self.execute_update(model.to_map()).await
+    pub fn updates<'b>(&'b mut self, model: &T) -> BoxFuture<'b, Result<u64, sqlx::Error>> {
+        self.execute_update(model.to_map())
     }
 
     /// Updates columns based on a partial model (struct implementing AnyImpl).
@@ -1249,92 +1268,94 @@ where
     /// # Returns
     ///
     /// * `Ok(u64)` - The number of rows affected
-    pub async fn update_partial<P: AnyImpl>(&mut self, partial: &P) -> Result<u64, sqlx::Error> {
-        self.execute_update(partial.to_map()).await
+    pub fn update_partial<'b, P: AnyImpl>(&'b mut self, partial: &P) -> BoxFuture<'b, Result<u64, sqlx::Error>> {
+        self.execute_update(partial.to_map())
     }
 
     /// Internal helper to execute an UPDATE query from a map of values.
-    async fn execute_update(
-        &mut self,
+    fn execute_update<'b>(
+        &'b mut self,
         data_map: std::collections::HashMap<String, String>,
-    ) -> Result<u64, sqlx::Error> {
-        let table_name = self.table_name.to_snake_case();
-        let mut query = format!("UPDATE \"{}\" SET ", table_name);
+    ) -> BoxFuture<'b, Result<u64, sqlx::Error>> {
+        Box::pin(async move {
+            let table_name = self.table_name.to_snake_case();
+            let mut query = format!("UPDATE \"{}\" SET ", table_name);
 
-        let mut bindings: Vec<(String, &str)> = Vec::new();
-        let mut set_clauses = Vec::new();
+            let mut bindings: Vec<(String, &str)> = Vec::new();
+            let mut set_clauses = Vec::new();
 
-        // Maintain argument counter for PostgreSQL ($1, $2, ...)
-        let mut arg_counter = 1;
+            // Maintain argument counter for PostgreSQL ($1, $2, ...)
+            let mut arg_counter = 1;
 
-        // Build SET clause
-        for (col_name, value) in data_map {
-            // Strip the "r#" prefix if present
-            let col_name_clean = col_name.strip_prefix("r#").unwrap_or(&col_name).to_snake_case();
+            // Build SET clause
+            for (col_name, value) in data_map {
+                // Strip the "r#" prefix if present
+                let col_name_clean = col_name.strip_prefix("r#").unwrap_or(&col_name).to_snake_case();
 
-            // Find the SQL type for this column from the Model metadata
-            let sql_type = self
-                .columns_info
-                .iter()
-                .find(|c| c.name == col_name || c.name == col_name_clean)
-                .map(|c| c.sql_type)
-                .unwrap_or("TEXT");
+                // Find the SQL type for this column from the Model metadata
+                let sql_type = self
+                    .columns_info
+                    .iter()
+                    .find(|c| c.name == col_name || c.name == col_name_clean)
+                    .map(|c| c.sql_type)
+                    .unwrap_or("TEXT");
 
-            // Generate placeholder
-            let placeholder = match self.tx.driver() {
-                Drivers::Postgres => {
-                    let idx = arg_counter;
-                    arg_counter += 1;
+                // Generate placeholder
+                let placeholder = match self.driver {
+                    Drivers::Postgres => {
+                        let idx = arg_counter;
+                        arg_counter += 1;
 
-                    if temporal::is_temporal_type(sql_type) {
-                        format!("${}{}", idx, temporal::get_postgres_type_cast(sql_type))
-                    } else {
-                        match sql_type {
-                            "UUID" => format!("${}::UUID", idx),
-                            _ => format!("${}", idx),
+                        if temporal::is_temporal_type(sql_type) {
+                            format!("${}{}", idx, temporal::get_postgres_type_cast(sql_type))
+                        } else {
+                            match sql_type {
+                                "UUID" => format!("${}::UUID", idx),
+                                _ => format!("${}", idx),
+                            }
                         }
                     }
-                }
-                _ => "?".to_string(),
-            };
+                    _ => "?".to_string(),
+                };
 
-            set_clauses.push(format!("\"{}\" = {}", col_name_clean, placeholder));
-            bindings.push((value, sql_type));
-        }
-
-        // If no fields to update, return 0
-        if set_clauses.is_empty() {
-            return Ok(0);
-        }
-
-        query.push_str(&set_clauses.join(", "));
-
-        // Build WHERE clause
-        query.push_str(" WHERE 1=1");
-
-        let mut args = AnyArguments::default();
-
-        // Bind SET values
-        for (val_str, sql_type) in bindings {
-            if args.bind_value(&val_str, sql_type, &self.tx.driver()).is_err() {
-                let _ = args.add(val_str);
+                set_clauses.push(format!("\"{}\" = {}", col_name_clean, placeholder));
+                bindings.push((value, sql_type));
             }
-        }
 
-        // Apply WHERE clauses (appending to args and query)
-        for clause in &self.where_clauses {
-            clause(&mut query, &mut args, &self.tx.driver(), &mut arg_counter);
-        }
+            // If no fields to update, return 0
+            if set_clauses.is_empty() {
+                return Ok(0);
+            }
 
-        // Print SQL query to logs if debug mode is active
-        if self.debug_mode {
-            log::debug!("SQL: {}", query);
-        }
+            query.push_str(&set_clauses.join(", "));
 
-        // Execute the UPDATE query
-        let result = sqlx::query_with(&query, args).execute(self.tx.executor()).await?;
+            // Build WHERE clause
+            query.push_str(" WHERE 1=1");
 
-        Ok(result.rows_affected())
+            let mut args = AnyArguments::default();
+
+            // Bind SET values
+            for (val_str, sql_type) in bindings {
+                if args.bind_value(&val_str, sql_type, &self.driver).is_err() {
+                    let _ = args.add(val_str);
+                }
+            }
+
+            // Apply WHERE clauses (appending to args and query)
+            for clause in &self.where_clauses {
+                clause(&mut query, &mut args, &self.driver, &mut arg_counter);
+            }
+
+            // Print SQL query to logs if debug mode is active
+            if self.debug_mode {
+                log::debug!("SQL: {}", query);
+            }
+
+            // Execute the UPDATE query
+            let result = sqlx::query_with(&query, args).execute(self.tx.executor()).await?;
+
+            Ok(result.rows_affected())
+        })
     }
 
     /// Executes a DELETE query based on the current filters.
@@ -1352,7 +1373,7 @@ where
         let mut arg_counter = 1;
 
         for clause in &self.where_clauses {
-            clause(&mut query, &mut args, &self.tx.driver(), &mut arg_counter);
+            clause(&mut query, &mut args, &self.driver, &mut arg_counter);
         }
 
         // Print SQL query to logs if debug mode is active
