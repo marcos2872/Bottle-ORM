@@ -162,6 +162,15 @@ pub struct QueryBuilder<'a, T, E> {
     /// Activate debug mode in query
     pub(crate) debug_mode: bool,
 
+    /// Clauses for GROUP BY
+    pub(crate) group_by_clauses: Vec<String>,
+
+    /// Clauses for HAVING
+    pub(crate) having_clauses: Vec<FilterFn>,
+
+    /// Distinct flag
+    pub(crate) is_distinct: bool,
+
     /// PhantomData to bind the generic type T
     pub(crate) _marker: PhantomData<&'a T>,
 }
@@ -219,6 +228,9 @@ where
             where_clauses: Vec::new(),
             order_clauses: Vec::new(),
             joins_clauses: Vec::new(),
+            group_by_clauses: Vec::new(),
+            having_clauses: Vec::new(),
+            is_distinct: false,
             limit: None,
             offset: None,
             _marker: PhantomData,
@@ -435,15 +447,313 @@ where
         let values = trimmed_value.split_once("=");
         let parsed_query: String;
         if let Some((first, second)) = values {
-        	let ref_table = first.split_once(".").expect("failed to parse JOIN clause");
-         	let to_table = second.split_once(".").expect("failed to parse JOIN clause");
-         	parsed_query = format!("\"{}\".\"{}\" = \"{}\".\"{}\"", ref_table.0, ref_table.1, to_table.0, to_table.1);
+            let ref_table = first.split_once(".").expect("failed to parse JOIN clause");
+            let to_table = second.split_once(".").expect("failed to parse JOIN clause");
+            parsed_query = format!("\"{}\".\"{}\" = \"{}\".\"{}\"", ref_table.0, ref_table.1, to_table.0, to_table.1);
         } else {
-        	panic!("Failed to parse JOIN, Ex to use: .join(\"table2\", \"table.column = table2.column2\")")
+            panic!("Failed to parse JOIN, Ex to use: .join(\"table2\", \"table.column = table2.column2\")")
         }
 
         self.joins_clauses.push(format!("JOIN \"{}\" ON {}", table, parsed_query));
         self
+    }
+
+    /// Internal helper for specific join types
+    fn join_generic(mut self, join_type: &str, table: &str, s_query: &str) -> Self {
+        let trimmed_value = s_query.replace(" ", "");
+        let values = trimmed_value.split_once("=");
+        let parsed_query: String;
+        if let Some((first, second)) = values {
+            let ref_table = first.split_once(".").expect("failed to parse JOIN clause");
+            let to_table = second.split_once(".").expect("failed to parse JOIN clause");
+            parsed_query = format!("\"{}\".\"{}\" = \"{}\".\"{}\"", ref_table.0, ref_table.1, to_table.0, to_table.1);
+        } else {
+            panic!("Failed to parse JOIN, Ex to use: .join(\"table2\", \"table.column = table2.column2\")")
+        }
+
+        self.joins_clauses.push(format!("{} JOIN \"{}\" ON {}", join_type, table, parsed_query));
+        self
+    }
+
+    /// Adds a LEFT JOIN clause.
+    ///
+    /// Performs a LEFT JOIN with another table. Returns all records from the left table,
+    /// and the matched records from the right table (or NULL if no match).
+    ///
+    /// # Arguments
+    ///
+    /// * `table` - The name of the table to join with
+    /// * `on` - The join condition (e.g., "users.id = posts.user_id")
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Get all users and their posts (if any)
+    /// let users_with_posts = db.model::<User>()
+    ///     .left_join("posts", "users.id = posts.user_id")
+    ///     .scan()
+    ///     .await?;
+    /// ```
+    pub fn left_join(self, table: &str, on: &str) -> Self {
+        self.join_generic("LEFT", table, on)
+    }
+
+    /// Adds a RIGHT JOIN clause.
+    ///
+    /// Performs a RIGHT JOIN with another table. Returns all records from the right table,
+    /// and the matched records from the left table (or NULL if no match).
+    ///
+    /// # Arguments
+    ///
+    /// * `table` - The name of the table to join with
+    /// * `on` - The join condition
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let posts_with_users = db.model::<Post>()
+    ///     .right_join("users", "posts.user_id = users.id")
+    ///     .scan()
+    ///     .await?;
+    /// ```
+    pub fn right_join(self, table: &str, on: &str) -> Self {
+        self.join_generic("RIGHT", table, on)
+    }
+
+    /// Adds an INNER JOIN clause.
+    ///
+    /// Performs an INNER JOIN with another table. Returns records that have matching
+    /// values in both tables.
+    ///
+    /// # Arguments
+    ///
+    /// * `table` - The name of the table to join with
+    /// * `on` - The join condition
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Get only users who have posts
+    /// let active_users = db.model::<User>()
+    ///     .inner_join("posts", "users.id = posts.user_id")
+    ///     .scan()
+    ///     .await?;
+    /// ```
+    pub fn inner_join(self, table: &str, on: &str) -> Self {
+        self.join_generic("INNER", table, on)
+    }
+
+    /// Adds a FULL JOIN clause.
+    ///
+    /// Performs a FULL OUTER JOIN. Returns all records when there is a match in
+    /// either left or right table.
+    ///
+    /// # Arguments
+    ///
+    /// * `table` - The name of the table to join with
+    /// * `on` - The join condition
+    ///
+    /// # Note
+    ///
+    /// Support for FULL JOIN depends on the underlying database engine (e.g., SQLite
+    /// does not support FULL JOIN directly).
+    pub fn full_join(self, table: &str, on: &str) -> Self {
+        self.join_generic("FULL", table, on)
+    }
+
+    /// Marks the query to return DISTINCT results.
+    ///
+    /// Adds the `DISTINCT` keyword to the SELECT statement, ensuring that unique
+    /// rows are returned.
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Get unique ages of users
+    /// let unique_ages: Vec<i32> = db.model::<User>()
+    ///     .select("age")
+    ///     .distinct()
+    ///     .scan()
+    ///     .await?;
+    /// ```
+    pub fn distinct(mut self) -> Self {
+        self.is_distinct = true;
+        self
+    }
+
+    /// Adds a GROUP BY clause to the query.
+    ///
+    /// Groups rows that have the same values into summary rows. Often used with
+    /// aggregate functions (COUNT, MAX, MIN, SUM, AVG).
+    ///
+    /// # Arguments
+    ///
+    /// * `columns` - Comma-separated list of columns to group by
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Count users by age group
+    /// let stats: Vec<(i32, i64)> = db.model::<User>()
+    ///     .select("age, COUNT(*)")
+    ///     .group_by("age")
+    ///     .scan()
+    ///     .await?;
+    /// ```
+    pub fn group_by(mut self, columns: &str) -> Self {
+        self.group_by_clauses.push(columns.to_string());
+        self
+    }
+
+    /// Adds a HAVING clause to the query.
+    ///
+    /// Used to filter groups created by `group_by`. Similar to `filter` (WHERE),
+    /// but operates on grouped records and aggregate functions.
+    ///
+    /// # Arguments
+    ///
+    /// * `col` - The column or aggregate function to filter on
+    /// * `op` - Comparison operator
+    /// * `value` - Value to compare against
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// // Get ages with more than 5 users
+    /// let popular_ages = db.model::<User>()
+    ///     .select("age, COUNT(*)")
+    ///     .group_by("age")
+    ///     .having("COUNT(*)", ">", 5)
+    ///     .scan()
+    ///     .await?;
+    /// ```
+    pub fn having<V>(mut self, col: &'static str, op: &'static str, value: V) -> Self
+    where
+        V: 'static + for<'q> Encode<'q, Any> + Type<Any> + Send + Sync + Clone,
+    {
+        let clause: FilterFn = Box::new(move |query, args, driver, arg_counter| {
+            query.push_str(" AND ");
+            query.push_str(col);
+            query.push(' ');
+            query.push_str(op);
+            query.push(' ');
+
+            match driver {
+                Drivers::Postgres => {
+                    query.push_str(&format!("${}", arg_counter));
+                    *arg_counter += 1;
+                }
+                _ => query.push('?'),
+            }
+            let _ = args.add(value.clone());
+        });
+
+        self.having_clauses.push(clause);
+        self
+    }
+
+    /// Returns the COUNT of rows matching the query.
+    ///
+    /// A convenience method that automatically sets `SELECT COUNT(*)` and returns
+    /// the result as an `i64`.
+    ///
+    /// # Returns
+    ///
+    /// * `Ok(i64)` - The count of rows
+    /// * `Err(sqlx::Error)` - Database error
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let user_count = db.model::<User>().count().await?;
+    /// ```
+    pub async fn count(mut self) -> Result<i64, sqlx::Error> {
+        self.select_columns = vec!["COUNT(*)".to_string()];
+        self.scalar::<i64>().await
+    }
+
+    /// Returns the SUM of the specified column.
+    ///
+    /// Calculates the sum of a numeric column.
+    ///
+    /// # Arguments
+    ///
+    /// * `column` - The column to sum
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let total_age: i64 = db.model::<User>().sum("age").await?;
+    /// ```
+    pub async fn sum<N>(mut self, column: &str) -> Result<N, sqlx::Error>
+    where
+        N: for<'r> Decode<'r, Any> + Type<Any> + Send + Unpin,
+    {
+        self.select_columns = vec![format!("SUM({})", column)];
+        self.scalar::<N>().await
+    }
+
+    /// Returns the AVG of the specified column.
+    ///
+    /// Calculates the average value of a numeric column.
+    ///
+    /// # Arguments
+    ///
+    /// * `column` - The column to average
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let avg_age: f64 = db.model::<User>().avg("age").await?;
+    /// ```
+    pub async fn avg<N>(mut self, column: &str) -> Result<N, sqlx::Error>
+    where
+        N: for<'r> Decode<'r, Any> + Type<Any> + Send + Unpin,
+    {
+        self.select_columns = vec![format!("AVG({})", column)];
+        self.scalar::<N>().await
+    }
+
+    /// Returns the MIN of the specified column.
+    ///
+    /// Finds the minimum value in a column.
+    ///
+    /// # Arguments
+    ///
+    /// * `column` - The column to check
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let min_age: i32 = db.model::<User>().min("age").await?;
+    /// ```
+    pub async fn min<N>(mut self, column: &str) -> Result<N, sqlx::Error>
+    where
+        N: for<'r> Decode<'r, Any> + Type<Any> + Send + Unpin,
+    {
+        self.select_columns = vec![format!("MIN({})", column)];
+        self.scalar::<N>().await
+    }
+
+    /// Returns the MAX of the specified column.
+    ///
+    /// Finds the maximum value in a column.
+    ///
+    /// # Arguments
+    ///
+    /// * `column` - The column to check
+    ///
+    /// # Example
+    ///
+    /// ```rust,ignore
+    /// let max_age: i32 = db.model::<User>().max("age").await?;
+    /// ```
+    pub async fn max<N>(mut self, column: &str) -> Result<N, sqlx::Error>
+    where
+        N: for<'r> Decode<'r, Any> + Type<Any> + Send + Unpin,
+    {
+        self.select_columns = vec![format!("MAX({})", column)];
+        self.scalar::<N>().await
     }
 
     /// Applies pagination with validation and limits.
@@ -678,6 +988,7 @@ where
                         } else {
                             match *sql_type {
                                 "UUID" => format!("${}::UUID", idx),
+                                "JSONB" | "jsonb" => format!("${}::JSONB", idx),
                                 _ => format!("${}", idx),
                             }
                         }
@@ -824,6 +1135,10 @@ where
     pub fn to_sql(&self) -> String {
         let mut query = String::from("SELECT ");
 
+        if self.is_distinct {
+            query.push_str("DISTINCT ");
+        }
+
         // Handle column selection
         if self.select_columns.is_empty() {
             query.push('*');
@@ -833,7 +1148,13 @@ where
 
         query.push_str(" FROM \"");
         query.push_str(&self.table_name.to_snake_case());
-        query.push_str("\" WHERE 1=1");
+        query.push_str("\" ");
+
+        if !self.joins_clauses.is_empty() {
+            query.push_str(&self.joins_clauses.join(" "));
+        }
+
+        query.push_str(" WHERE 1=1");
 
         // Apply WHERE clauses with dummy arguments
         let mut dummy_args = AnyArguments::default();
@@ -841,6 +1162,19 @@ where
 
         for clause in &self.where_clauses {
             clause(&mut query, &mut dummy_args, &self.driver, &mut dummy_counter);
+        }
+
+        // Apply GROUP BY
+        if !self.group_by_clauses.is_empty() {
+            query.push_str(&format!(" GROUP BY {}", self.group_by_clauses.join(", ")));
+        }
+
+        // Apply HAVING
+        if !self.having_clauses.is_empty() {
+            query.push_str(" HAVING 1=1");
+            for clause in &self.having_clauses {
+                clause(&mut query, &mut dummy_args, &self.driver, &mut dummy_counter);
+            }
         }
 
         // Apply ORDER BY if present
@@ -969,6 +1303,11 @@ where
     {
         // Build SELECT clause
         let mut query = String::from("SELECT ");
+
+        if self.is_distinct {
+            query.push_str("DISTINCT ");
+        }
+
         query.push_str(&self.select_args_sql::<R>().join(", "));
 
         // Build FROM clause
@@ -987,6 +1326,19 @@ where
 
         for clause in &self.where_clauses {
             clause(&mut query, &mut args, &self.driver, &mut arg_counter);
+        }
+
+        // Apply GROUP BY
+        if !self.group_by_clauses.is_empty() {
+            query.push_str(&format!(" GROUP BY {}", self.group_by_clauses.join(", ")));
+        }
+
+        // Apply HAVING
+        if !self.having_clauses.is_empty() {
+            query.push_str(" HAVING 1=1");
+            for clause in &self.having_clauses {
+                clause(&mut query, &mut args, &self.driver, &mut arg_counter);
+            }
         }
 
         // Apply ORDER BY clauses
@@ -1085,6 +1437,11 @@ where
     {
         // Build SELECT clause
         let mut query = String::from("SELECT ");
+
+        if self.is_distinct {
+            query.push_str("DISTINCT ");
+        }
+
         query.push_str(&self.select_args_sql::<R>().join(", "));
 
         // Build FROM clause
@@ -1103,6 +1460,19 @@ where
 
         for clause in &self.where_clauses {
             clause(&mut query, &mut args, &self.driver, &mut arg_counter);
+        }
+
+        // Apply GROUP BY
+        if !self.group_by_clauses.is_empty() {
+            query.push_str(&format!(" GROUP BY {}", self.group_by_clauses.join(", ")));
+        }
+
+        // Apply HAVING
+        if !self.having_clauses.is_empty() {
+            query.push_str(" HAVING 1=1");
+            for clause in &self.having_clauses {
+                clause(&mut query, &mut args, &self.driver, &mut arg_counter);
+            }
         }
 
         // Find primary key column for consistent ordering
@@ -1164,6 +1534,10 @@ where
         // Build SELECT clause
         let mut query = String::from("SELECT ");
 
+        if self.is_distinct {
+            query.push_str("DISTINCT ");
+        }
+
         if self.select_columns.is_empty() {
             return Err(sqlx::Error::ColumnNotFound("is not possible get data without column".to_string()));
         }
@@ -1200,6 +1574,19 @@ where
 
         for clause in &self.where_clauses {
             clause(&mut query, &mut args, &self.driver, &mut arg_counter);
+        }
+
+        // Apply GROUP BY
+        if !self.group_by_clauses.is_empty() {
+            query.push_str(&format!(" GROUP BY {}", self.group_by_clauses.join(", ")));
+        }
+
+        // Apply HAVING
+        if !self.having_clauses.is_empty() {
+            query.push_str(" HAVING 1=1");
+            for clause in &self.having_clauses {
+                clause(&mut query, &mut args, &self.driver, &mut arg_counter);
+            }
         }
 
         // Apply ORDER BY
@@ -1311,6 +1698,7 @@ where
                         } else {
                             match sql_type {
                                 "UUID" => format!("${}::UUID", idx),
+                                "JSONB" | "jsonb" => format!("${}::JSONB", idx),
                                 _ => format!("${}", idx),
                             }
                         }

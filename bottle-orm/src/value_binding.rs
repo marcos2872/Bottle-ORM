@@ -59,6 +59,9 @@ pub trait ValueBinder {
     /// Binds a DateTime<Utc> value.
     fn bind_datetime_utc(&mut self, value: DateTime<Utc>, driver: &Drivers);
 
+    /// Binds a DateTime<FixedOffset> value.
+    fn bind_datetime_fixed(&mut self, value: chrono::DateTime<chrono::FixedOffset>, driver: &Drivers);
+
     /// Binds a NaiveDateTime value.
     fn bind_naive_datetime(&mut self, value: NaiveDateTime, driver: &Drivers);
 
@@ -76,16 +79,37 @@ impl ValueBinder for AnyArguments<'_> {
             // Integer Types
             // ================================================================
             "INTEGER" | "INT" | "SERIAL" | "serial" | "int4" => {
-                let val: i32 =
-                    value_str.parse().map_err(|e| Error::Conversion(format!("Failed to parse i32: {}", e)))?;
-                self.bind_i32(val);
+                // Try parsing as i32 first, fallback to u32/i64 if needed but sql_type says INTEGER
+                if let Ok(val) = value_str.parse::<i32>() {
+                     self.bind_i32(val);
+                } else if let Ok(val) = value_str.parse::<u32>() {
+                     self.bind_i64(val as i64); // Map u32 to i64 to fit
+                } else {
+                     return Err(Error::Conversion(format!("Failed to parse integer: {}", value_str)));
+                }
                 Ok(())
             }
 
             "BIGINT" | "INT8" | "int8" | "BIGSERIAL" => {
-                let val: i64 =
-                    value_str.parse().map_err(|e| Error::Conversion(format!("Failed to parse i64: {}", e)))?;
-                self.bind_i64(val);
+                 if let Ok(val) = value_str.parse::<i64>() {
+                    self.bind_i64(val);
+                 } else if let Ok(val) = value_str.parse::<u64>() {
+                    // u64 might overflow i64, strictly speaking, but standard mapping in rust sqlx usually handles i64
+                    // We'll try to bind as i64 (unsafe cast) or string? 
+                    // Best effort: bind as i64 (reinterpreting bits or clamping? No, let's just parse)
+                    // If it exceeds i64::MAX, it's an issue for standard SQL BIGINT (signed).
+                    // For now, parse as i64.
+                     let val = value_str.parse::<i64>().map_err(|e| Error::Conversion(format!("Failed to parse i64: {}", e)))?;
+                     self.bind_i64(val);
+                 } else {
+                    return Err(Error::Conversion(format!("Failed to parse i64: {}", value_str)));
+                 }
+                Ok(())
+            }
+
+            "SMALLINT" | "INT2" | "int2" => {
+                let val: i16 = value_str.parse().map_err(|e| Error::Conversion(format!("Failed to parse i16: {}", e)))?;
+                let _ = self.add(val);
                 Ok(())
             }
 
@@ -102,10 +126,37 @@ impl ValueBinder for AnyArguments<'_> {
             // ================================================================
             // Floating-Point Types
             // ================================================================
-            "DOUBLE PRECISION" | "FLOAT" | "float8" | "REAL" | "NUMERIC" | "DECIMAL" => {
+            "DOUBLE PRECISION" | "FLOAT" | "float8" | "NUMERIC" | "DECIMAL" => {
                 let val: f64 =
                     value_str.parse().map_err(|e| Error::Conversion(format!("Failed to parse f64: {}", e)))?;
                 self.bind_f64(val);
+                Ok(())
+            }
+            
+            "REAL" | "float4" => {
+                let val: f32 =
+                    value_str.parse().map_err(|e| Error::Conversion(format!("Failed to parse f32: {}", e)))?;
+                 let _ = self.add(val);
+                Ok(())
+            }
+
+            // ================================================================
+            // JSON Types
+            // ================================================================
+            "JSON" | "JSONB" | "json" | "jsonb" => {
+                // Determine driver-specific JSON handling
+                match driver {
+                    Drivers::Postgres => {
+                        // For Postgres, we can bind as serde_json::Value if sqlx supports it,
+                        // or bind as string/text but rely on Postgres casting `::JSONB` in the query string.
+                        // The QueryBuilder handles the `::JSONB` cast in the SQL string.
+                        // So we just bind the string representation here.
+                        self.bind_string(value_str.to_string());
+                    }
+                    _ => {
+                        self.bind_string(value_str.to_string());
+                    }
+                }
                 Ok(())
             }
 
@@ -123,8 +174,15 @@ impl ValueBinder for AnyArguments<'_> {
             // Temporal Types (DateTime, Date, Time)
             // ================================================================
             "TIMESTAMPTZ" | "DateTime" => {
-                let val = temporal::parse_datetime_utc(value_str)?;
-                self.bind_datetime_utc(val, driver);
+                // Try parsing as UTC first
+                if let Ok(val) = temporal::parse_datetime_utc(value_str) {
+                    self.bind_datetime_utc(val, driver);
+                } else if let Ok(val) = temporal::parse_datetime_fixed(value_str) {
+                    // Fallback to FixedOffset if UTC fails (though parse_datetime_utc handles fixed too)
+                    self.bind_datetime_fixed(val, driver);
+                } else {
+                     return Err(Error::Conversion(format!("Failed to parse DateTime: {}", value_str)));
+                }
                 Ok(())
             }
 
@@ -196,6 +254,11 @@ impl ValueBinder for AnyArguments<'_> {
 
     fn bind_datetime_utc(&mut self, value: DateTime<Utc>, driver: &Drivers) {
         let formatted = temporal::format_datetime_for_driver(&value, driver);
+        let _ = self.add(formatted);
+    }
+
+    fn bind_datetime_fixed(&mut self, value: chrono::DateTime<chrono::FixedOffset>, driver: &Drivers) {
+        let formatted = temporal::format_datetime_fixed_for_driver(&value, driver);
         let _ = self.add(formatted);
     }
 

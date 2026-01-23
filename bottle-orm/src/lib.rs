@@ -117,6 +117,12 @@ pub mod temporal;
 /// supporting all SQL types across different database drivers.
 pub mod value_binding;
 
+/// Pagination utilities for web framework integration.
+///
+/// Provides the `Pagination` struct which implements `Serialize`/`Deserialize`
+/// for easy extraction from query parameters in frameworks like Axum or Actix-web.
+pub mod pagination;
+
 // ============================================================================
 // Public API Re-exports
 // ============================================================================
@@ -158,3 +164,6 @@ pub use migration::Migrator;
 /// This is the main error type used throughout Bottle ORM, wrapping
 /// various error scenarios including database errors and validation errors.
 pub use errors::Error;
+
+/// Re-export of `Pagination` struct.
+pub use pagination::Pagination;

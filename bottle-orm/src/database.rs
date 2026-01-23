@@ -479,6 +479,23 @@ impl Database {
             }
         }
 
+        // Add SQLite Foreign Keys inline (SQLite doesn't support ADD CONSTRAINT)
+        if let Drivers::SQLite = self.driver {
+            for col in &columns {
+                if let (Some(f_table), Some(f_key)) = (col.foreign_table, col.foreign_key) {
+                    let col_name = col.name.strip_prefix("r#").unwrap_or(col.name).to_snake_case();
+                    let f_table_clean = f_table.to_snake_case();
+                    let f_key_clean = f_key.to_snake_case();
+
+                    let fk_def = format!(
+                        "FOREIGN KEY (\"{}\") REFERENCES \"{}\" (\"{}\")",
+                        col_name, f_table_clean, f_key_clean
+                    );
+                    column_defs.push(fk_def);
+                }
+            }
+        }
+
         // Build and execute CREATE TABLE statement
         let create_table_query =
             format!("CREATE TABLE IF NOT EXISTS \"{}\" ({})", table_name.to_snake_case(), column_defs.join(", "));
@@ -591,6 +608,11 @@ impl Database {
     ///
     /// * [`Migrator`] - For automatic migration order management
     pub async fn assign_foreign_keys<T: Model>(&self) -> Result<&Self, Error> {
+        // SQLite handles FKs in create_table, so we skip here
+        if let Drivers::SQLite = self.driver {
+            return Ok(self);
+        }
+
         // Get table name in snake_case format
         let table_name = T::table_name().to_snake_case();
         let columns = T::columns();
@@ -606,13 +628,26 @@ impl Database {
                 // Generate constraint name
                 let constraint_name = format!("fk_{}_{}", table_name, col_name);
 
-                // Check if constraint already exists (PostgreSQL-specific)
-                // TODO: Add support for MySQL and SQLite constraint checking
-                let check_query =
-                    "SELECT count(*) FROM information_schema.table_constraints WHERE constraint_name = $1";
-                let row = sqlx::query(check_query).bind(&constraint_name).fetch_one(&self.pool).await?;
-
-                let count: i64 = row.try_get(0).unwrap_or(0);
+                // Check if constraint already exists
+                let count: i64 = match self.driver {
+                    Drivers::Postgres => {
+                        let check_query = "SELECT count(*) FROM information_schema.table_constraints WHERE constraint_name = $1";
+                        let row = sqlx::query(check_query)
+                            .bind(&constraint_name)
+                            .fetch_one(&self.pool)
+                            .await?;
+                        row.try_get(0).unwrap_or(0)
+                    }
+                    Drivers::MySQL => {
+                        let check_query = "SELECT count(*) FROM information_schema.TABLE_CONSTRAINTS WHERE CONSTRAINT_NAME = ? AND TABLE_SCHEMA = DATABASE()";
+                        let row = sqlx::query(check_query)
+                            .bind(&constraint_name)
+                            .fetch_one(&self.pool)
+                            .await?;
+                        row.try_get(0).unwrap_or(0)
+                    }
+                    Drivers::SQLite => 0, // Unreachable
+                };
 
                 // Skip if constraint already exists
                 if count > 0 {

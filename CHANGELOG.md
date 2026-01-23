@@ -5,7 +5,36 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.4.0] - 2026-01-23
+
+### Features
+
+#### 🚀 Enhanced Query Builder
+- **Joins**: Added support for explicit joins: `left_join`, `right_join`, `inner_join`, `full_join`.
+- **Grouping**: Added `group_by` and `having` methods for analytical queries.
+- **Distinct**: Added `distinct()` method to filter duplicate rows.
+- **Aggregates**: Added helper methods for `count()`, `sum()`, `avg()`, `min()`, and `max()`.
+
+#### 🌐 Web Framework Integration
+- **Pagination Module**: Introduced `bottle_orm::pagination` with `Pagination` and `Paginated<T>` structs.
+  - Implements `Serialize`/`Deserialize` for easy integration with frameworks like **Axum** and **Actix-web**.
+  - `paginate()` method automatically executes count and data queries in a single step.
+
+#### 🛠️ Extended Type Support
+- **Numeric Types**: Added support for `f32` (REAL), `u32` (INTEGER), `i16` (SMALLINT), `u16` (INTEGER), `i8`/`u8` (SMALLINT).
+- **JSON Support**: Added first-class support for `serde_json::Value` (mapped to `JSONB` in Postgres).
+- **Temporal Improvements**: 
+  - Added support for `DateTime<FixedOffset>` and `DateTime<Local>`.
+  - Improved parsing resilience for various date string formats.
+
+#### 💾 Database Compatibility
+- **Foreign Keys**: 
+  - **SQLite**: Added support for inline foreign keys in `create_table` (since SQLite doesn't support `ADD CONSTRAINT`).
+  - **MySQL**: Implemented `assign_foreign_keys` using `information_schema` checks.
+  - **PostgreSQL**: Maintained existing support.
+
+### Documentation
+- **Comprehensive Docs**: Added detailed Rustdoc comments with examples for all public modules (`query_builder`, `pagination`, `transaction`, etc.).
 
 ## [0.3.4] - 2026-01-22
 

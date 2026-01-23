@@ -133,18 +133,25 @@ pub fn rust_type_to_sql(ty: &Type) -> (String, bool) {
                 // Integer Types
                 // ------------------------------------------------------------
                 // i32 → INTEGER (4-byte signed integer)
-                // Commonly used for primary keys and numeric IDs
                 "i32" => ("INTEGER".to_string(), false),
-
                 // i64 → BIGINT (8-byte signed integer)
-                // Used for large numeric values and timestamps
                 "i64" => ("BIGINT".to_string(), false),
+                // i16 → SMALLINT (2-byte signed integer)
+                "i16" => ("SMALLINT".to_string(), false),
+                // i8 → SMALLINT (1-byte signed integer, mapped to smallint)
+                "i8" => ("SMALLINT".to_string(), false),
+                
+                // Unsigned integers (Note: SQL standard doesn't strictly support unsigned, 
+                // typically mapped to same size signed or larger if needed, but here mapping direct)
+                "u32" => ("INTEGER".to_string(), false),
+                "u64" => ("BIGINT".to_string(), false),
+                "u16" => ("INTEGER".to_string(), false),
+                "u8" => ("SMALLINT".to_string(), false),
 
                 // ------------------------------------------------------------
                 // Text Types
                 // ------------------------------------------------------------
                 // String → TEXT (variable-length text)
-                // Can be constrained with #[orm(size = N)] to VARCHAR(N)
                 "String" => ("TEXT".to_string(), false),
 
                 // ------------------------------------------------------------
@@ -157,8 +164,16 @@ pub fn rust_type_to_sql(ty: &Type) -> (String, bool) {
                 // Floating-Point Types
                 // ------------------------------------------------------------
                 // f64 → DOUBLE PRECISION (8-byte floating-point)
-                // Used for decimal numbers requiring high precision
                 "f64" => ("DOUBLE PRECISION".to_string(), false),
+                // f32 → REAL (4-byte floating-point)
+                "f32" => ("REAL".to_string(), false),
+
+                // ------------------------------------------------------------
+                // JSON Types
+                // ------------------------------------------------------------
+                // Value → JSONB (Binary JSON)
+                "Value" => ("JSONB".to_string(), false),
+                "Json" => ("JSONB".to_string(), false),
 
                 // ------------------------------------------------------------
                 // UUID Types (Versions 1-7)
