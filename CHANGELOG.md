@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.3] - 2026-01-23
+
+### Fixed
+- **Conflicting Implementation**: Fixed `AnyImpl` conflict when deriving both `Model` and `FromAnyRow`. 
+- **Model Derive Enhancement**: `#[derive(Model)]` now automatically implements `sqlx::FromRow<'r, sqlx::any::AnyRow>`, removing the need for `FromAnyRow` or manual implementation. It robustly handles `DateTime` and `Uuid` decoding from `AnyRow` (supporting both text and binary protocols via string parsing fallback).
+- **Dependency Features**: Added `uuid` feature to `sqlx` dependency in `bottle` crate (example) and `bottle-orm`.
+
 ## [0.4.2] - 2026-01-23
 
 ### Fixed
