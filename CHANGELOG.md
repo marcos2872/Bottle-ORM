@@ -5,6 +5,18 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.6] - 2026-01-30
+
+### Added
+- **Tuple Query Support**: Added support for mapping query results directly to tuples of Models (e.g., `(User, Account)`). This enables single-query JOINs with automatic column aliasing (`user__id`, `account__id`) to avoid name collisions.
+- **Trait `FromAnyRow`**: Introduced `FromAnyRow` trait to handle robust row mapping for complex types (tuples) and to replace `sqlx::FromRow` usage internally for better control over type conversions (especially `Uuid` and `DateTime` with `sqlx::Any`).
+- **Field Constants**: Added auto-generated field constants module (e.g., `user_fields::AGE`) for Model structs to support autocomplete and safer query building (contribution by Marcos Brito).
+- **Omit Attribute**: Added `#[orm(omit)]` attribute to exclude specific columns from being selected by default (contribution by Marcos Brito).
+
+### Fixed
+- **Postgres JSON Casting**: Restricted `to_json` casting for temporal types to PostgreSQL driver only, preventing syntax errors on other databases (contribution by Marcos Brito).
+- **UUID/Time Decoding**: Improved reliability of `Uuid` and `DateTime` decoding on `sqlx::Any` driver by strictly using string parsing fallback, resolving "trait bound not satisfied" errors.
+
 ## [0.4.5] - 2026-01-27
 
 ### Added
