@@ -30,7 +30,7 @@
 //! }
 //! ```
 
-use crate::{database::Connection, model::Model, query_builder::QueryBuilder, AnyImpl, any_struct::FromAnyRow};
+use crate::{any_struct::FromAnyRow, database::Connection, model::Model, query_builder::QueryBuilder, AnyImpl};
 use serde::{Deserialize, Serialize};
 use sqlx::Row;
 

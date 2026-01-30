@@ -14,20 +14,17 @@ async fn test_simple_mapping_still_works() -> Result<(), Box<dyn std::error::Err
 
     db.migrator().register::<SimpleUser>().run().await?;
 
-    let user = SimpleUser {
-        id: Uuid::new_v4(),
-        name: "Alice".to_string(),
-    };
+    let user = SimpleUser { id: Uuid::new_v4(), name: "Alice".to_string() };
 
     db.model::<SimpleUser>().insert(&user).await?;
 
-    // Testa scan simples
+    // Test scan simple
     let users: Vec<SimpleUser> = db.model::<SimpleUser>().scan().await?;
     assert_eq!(users.len(), 1);
     assert_eq!(users[0].name, "Alice");
     assert_eq!(users[0].id, user.id);
 
-    // Testa first simples
+    // Test first simple
     let fetched: SimpleUser = db.model::<SimpleUser>().first().await?;
     assert_eq!(fetched.name, "Alice");
 

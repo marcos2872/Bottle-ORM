@@ -39,7 +39,7 @@ pub fn expand(input: DeriveInput) -> TokenStream {
         let field_type = &f.ty;
         let column_name = field_name.as_ref().unwrap().to_string();
         let alias_name = format!("{}__{}", table_name, column_name);
-        
+
         // Special handling for DateTime fields: parse from string
         if is_datetime(field_type) {
             quote! {

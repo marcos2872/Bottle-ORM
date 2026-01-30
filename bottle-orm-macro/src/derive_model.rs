@@ -289,7 +289,7 @@ pub fn expand(ast: DeriveInput) -> TokenStream {
 
     let field_names_construct = fields.named.iter().map(|f| &f.ident);
     // We need to clone the logic for the second implementation as iterator is consumed
-    let from_row_logic_clone = from_row_logic.clone(); 
+    let from_row_logic_clone = from_row_logic.clone();
     let field_names_construct_clone = field_names_construct.clone();
 
     // ========================================================================

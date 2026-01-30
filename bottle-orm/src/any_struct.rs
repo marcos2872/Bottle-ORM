@@ -1,5 +1,5 @@
+use sqlx::{any::AnyRow, Error, Row};
 use std::collections::HashMap;
-use sqlx::{Row, any::AnyRow, Error};
 
 // ============================================================================
 // AnyInfo Structure
@@ -101,8 +101,12 @@ impl_cast_primitive!(i8, isize, u8, u16, u32, u64, usize);
 // ============================================================================
 
 impl AnyImpl for uuid::Uuid {
-    fn columns() -> Vec<AnyInfo> { Vec::new() }
-    fn to_map(&self) -> HashMap<String, String> { HashMap::new() }
+    fn columns() -> Vec<AnyInfo> {
+        Vec::new()
+    }
+    fn to_map(&self) -> HashMap<String, String> {
+        HashMap::new()
+    }
 }
 
 impl FromAnyRow for uuid::Uuid {
@@ -113,8 +117,12 @@ impl FromAnyRow for uuid::Uuid {
 }
 
 impl AnyImpl for chrono::NaiveDateTime {
-    fn columns() -> Vec<AnyInfo> { Vec::new() }
-    fn to_map(&self) -> HashMap<String, String> { HashMap::new() }
+    fn columns() -> Vec<AnyInfo> {
+        Vec::new()
+    }
+    fn to_map(&self) -> HashMap<String, String> {
+        HashMap::new()
+    }
 }
 
 impl FromAnyRow for chrono::NaiveDateTime {
@@ -125,8 +133,12 @@ impl FromAnyRow for chrono::NaiveDateTime {
 }
 
 impl AnyImpl for chrono::NaiveDate {
-    fn columns() -> Vec<AnyInfo> { Vec::new() }
-    fn to_map(&self) -> HashMap<String, String> { HashMap::new() }
+    fn columns() -> Vec<AnyInfo> {
+        Vec::new()
+    }
+    fn to_map(&self) -> HashMap<String, String> {
+        HashMap::new()
+    }
 }
 
 impl FromAnyRow for chrono::NaiveDate {
@@ -137,8 +149,12 @@ impl FromAnyRow for chrono::NaiveDate {
 }
 
 impl AnyImpl for chrono::NaiveTime {
-    fn columns() -> Vec<AnyInfo> { Vec::new() }
-    fn to_map(&self) -> HashMap<String, String> { HashMap::new() }
+    fn columns() -> Vec<AnyInfo> {
+        Vec::new()
+    }
+    fn to_map(&self) -> HashMap<String, String> {
+        HashMap::new()
+    }
 }
 
 impl FromAnyRow for chrono::NaiveTime {
@@ -149,8 +165,12 @@ impl FromAnyRow for chrono::NaiveTime {
 }
 
 impl AnyImpl for chrono::DateTime<chrono::Utc> {
-    fn columns() -> Vec<AnyInfo> { Vec::new() }
-    fn to_map(&self) -> HashMap<String, String> { HashMap::new() }
+    fn columns() -> Vec<AnyInfo> {
+        Vec::new()
+    }
+    fn to_map(&self) -> HashMap<String, String> {
+        HashMap::new()
+    }
 }
 
 impl FromAnyRow for chrono::DateTime<chrono::Utc> {
@@ -165,7 +185,9 @@ impl FromAnyRow for chrono::DateTime<chrono::Utc> {
 // ============================================================================
 
 impl<T: AnyImpl> AnyImpl for Option<T> {
-    fn columns() -> Vec<AnyInfo> { T::columns() }
+    fn columns() -> Vec<AnyInfo> {
+        T::columns()
+    }
     fn to_map(&self) -> HashMap<String, String> {
         match self {
             Some(v) => v.to_map(),
@@ -180,13 +202,13 @@ impl<T: FromAnyRow> FromAnyRow for Option<T> {
         match T::from_any_row(row) {
             Ok(v) => Ok(Some(v)),
             Err(_) => Ok(None), // Fallback? Or propagate error?
-            // If T fails to decode (e.g. invalid format), we probably should propagate error.
-            // But if T fails because "column not found" (unlikely for index 0) or type mismatch...
+                                // If T fails to decode (e.g. invalid format), we probably should propagate error.
+                                // But if T fails because "column not found" (unlikely for index 0) or type mismatch...
         }
     }
 }
 
-// Special impl for Option<String> to avoid recursion issues if needed, 
+// Special impl for Option<String> to avoid recursion issues if needed,
 // but T=String is in impl_supported_primitive.
 // Actually, generic impl above relies on T::from_any_row returning Error on NULL.
 // We need to intercept NULL before calling T.

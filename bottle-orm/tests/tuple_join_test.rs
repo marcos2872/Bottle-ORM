@@ -32,11 +32,7 @@ async fn test_tuple_join() -> Result<(), Box<dyn std::error::Error>> {
     let db = Database::builder().max_connections(1).connect("sqlite::memory:").await?;
 
     // 2. Run Migrations
-    db.migrator()
-        .register::<User>()
-        .register::<Account>()
-        .run()
-        .await?;
+    db.migrator().register::<User>().register::<Account>().run().await?;
 
     // 3. Insert Test Data
     let user_id = Uuid::new_v4();
@@ -51,12 +47,7 @@ async fn test_tuple_join() -> Result<(), Box<dyn std::error::Error>> {
         created_at: now,
     };
 
-    let account = Account {
-        id: account_id,
-        user_id: user_id,
-        account_type: "credential".to_string(),
-        balance: 100.50,
-    };
+    let account = Account { id: account_id, user_id: user_id, account_type: "credential".to_string(), balance: 100.50 };
 
     db.model::<User>().insert(&user).await?;
     db.model::<Account>().insert(&account).await?;
@@ -64,7 +55,8 @@ async fn test_tuple_join() -> Result<(), Box<dyn std::error::Error>> {
     // 4. Perform Join Query returning a Tuple
     // This uses the new feature where columns are automatically aliased (e.g. user__id, account__id)
     // and mapped to the respective structs in the tuple.
-    let (fetched_user, fetched_account): (User, Account) = db.model::<User>()
+    let (fetched_user, fetched_account): (User, Account) = db
+        .model::<User>()
         .join("account", "account.user_id = user.id")
         .equals("account_type", "credential".to_string())
         .equals("user.email", "test@example.com".to_string())

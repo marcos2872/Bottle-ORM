@@ -49,10 +49,7 @@
 
 use futures::future::BoxFuture;
 use heck::ToSnakeCase;
-use sqlx::{
-    Any, Arguments, Decode, Encode, Row, Type,
-    any::AnyArguments,
-};
+use sqlx::{any::AnyArguments, Any, Arguments, Decode, Encode, Row, Type};
 use std::marker::PhantomData;
 use uuid::Uuid;
 
@@ -61,12 +58,12 @@ use uuid::Uuid;
 // ============================================================================
 
 use crate::{
-    AnyImpl, Error,
     any_struct::FromAnyRow,
     database::{Connection, Drivers},
     model::{ColumnInfo, Model},
     temporal::{self, is_temporal_type},
     value_binding::ValueBinder,
+    AnyImpl, Error,
 };
 
 // ============================================================================
@@ -222,11 +219,8 @@ where
         columns: Vec<String>,
     ) -> Self {
         // Pre-populate omit_columns with globally omitted columns (from #[orm(omit)] attribute)
-        let omit_columns: Vec<String> = columns_info
-            .iter()
-            .filter(|c| c.omit)
-            .map(|c| c.name.to_snake_case())
-            .collect();
+        let omit_columns: Vec<String> =
+            columns_info.iter().filter(|c| c.omit).map(|c| c.name.to_snake_case()).collect();
 
         Self {
             tx,
@@ -1282,20 +1276,16 @@ where
                     .map(|c| {
                         let col_snake = c.column.to_snake_case();
                         let is_omitted = self.omit_columns.contains(&col_snake);
-                        let table_name = if !c.table.is_empty() {
-                            c.table.to_snake_case()
-                        } else {
-                            self.table_name.to_snake_case()
-                        };
-                        
+                        let table_name =
+                            if !c.table.is_empty() { c.table.to_snake_case() } else { self.table_name.to_snake_case() };
+
                         if is_omitted {
                             // Return type-appropriate placeholder based on sql_type
                             let placeholder = match c.sql_type {
                                 // String types
                                 "TEXT" | "VARCHAR" | "CHAR" | "STRING" => "'omited'",
                                 // Date/Time types - use epoch timestamp
-                                "TIMESTAMP" | "TIMESTAMPTZ" | "TIMESTAMP WITH TIME ZONE" => 
-                                    "'1970-01-01T00:00:00Z'",
+                                "TIMESTAMP" | "TIMESTAMPTZ" | "TIMESTAMP WITH TIME ZONE" => "'1970-01-01T00:00:00Z'",
                                 "DATE" => "'1970-01-01'",
                                 "TIME" => "'00:00:00'",
                                 // Numeric types
@@ -1314,10 +1304,7 @@ where
                         } else if is_temporal_type(c.sql_type) && matches!(self.driver, Drivers::Postgres) {
                             format!(
                                 "to_json(\"{}\".\"{}\") #>> '{{}}' AS \"{}__{}\"",
-                                table_name,
-                                col_snake,
-                                table_name,
-                                col_snake
+                                table_name, col_snake, table_name, col_snake
                             )
                         } else {
                             format!("\"{}\".\"{}\" AS \"{}__{}\"", table_name, col_snake, table_name, col_snake)
@@ -1459,10 +1446,8 @@ where
 
         // Execute query and fetch all results
         let rows = sqlx::query_with(&query, args).fetch_all(self.tx.executor()).await?;
-        
-        rows.iter()
-            .map(|row| R::from_any_row(row))
-            .collect()
+
+        rows.iter().map(|row| R::from_any_row(row)).collect()
     }
 
     /// Executes the query and returns only the first result.
