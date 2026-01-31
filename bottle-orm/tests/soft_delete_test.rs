@@ -98,3 +98,45 @@ async fn test_queries_with_soft_delete() -> Result<(), Box<dyn std::error::Error
 
     Ok(())
 }
+
+#[tokio::test]
+async fn test_hard_delete() -> Result<(), Box<dyn std::error::Error>> {
+    let db = Database::builder().max_connections(1).connect("sqlite::memory:").await?;
+    db.migrator().register::<SoftUser>().run().await?;
+
+    // Insert 3 users
+    let u1 = SoftUser { id: Uuid::new_v4(), name: "User1".to_string(), deleted_at: None };
+    let u2 = SoftUser { id: Uuid::new_v4(), name: "User2".to_string(), deleted_at: None };
+    let u3 = SoftUser { id: Uuid::new_v4(), name: "User3".to_string(), deleted_at: None };
+
+    db.model::<SoftUser>().insert(&u1).await?;
+    db.model::<SoftUser>().insert(&u2).await?;
+    db.model::<SoftUser>().insert(&u3).await?;
+
+    // Verify 3 users exist
+    let count: i64 = db.model::<SoftUser>().count().await?;
+    assert_eq!(count, 3);
+
+    // Hard delete User1 (bypasses soft delete, permanent removal)
+    let deleted = db
+        .model::<SoftUser>()
+        .filter(soft_user_fields::ID, Op::Eq, u1.id.to_string())
+        .hard_delete()
+        .await?;
+    assert_eq!(deleted, 1, "Should delete exactly 1 row");
+
+    // Verify User1 is GONE (even with_deleted)
+    let all_users: Vec<SoftUser> = db.model::<SoftUser>().with_deleted().scan().await?;
+    assert_eq!(all_users.len(), 2);
+    assert!(all_users.iter().all(|u| u.id != u1.id), "User1 should be permanently deleted");
+
+    // Hard delete all remaining users
+    let deleted_all = db.model::<SoftUser>().hard_delete().await?;
+    assert_eq!(deleted_all, 2, "Should delete 2 remaining rows");
+
+    // Verify all users are GONE
+    let final_count: i64 = db.model::<SoftUser>().with_deleted().count().await?;
+    assert_eq!(final_count, 0, "All users should be permanently deleted");
+
+    Ok(())
+}
